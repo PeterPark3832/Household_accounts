@@ -1,0 +1,30 @@
+# 환경변수 (API 키 포함 - 절대 커밋 금지)
+.env
+
+# Google Service Account 인증 파일 (개인키 포함 - 절대 커밋 금지)
+credentials.json
+*.json.key
+token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 가상환경
+venv/
+.venv/
+env/
+
+# 로그 / 런타임 데이터
+*.log
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db

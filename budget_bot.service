@@ -1,0 +1,34 @@
+[Unit]
+Description=Family Household Budget Telegram Bot v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 보안: root 대신 전용 사용자로 실행
+# 설정 방법: sudo useradd -r -s /bin/false budget
+User=budget
+Group=budget
+WorkingDirectory=/home/budget/household
+ExecStart=/home/budget/household/venv/bin/python /home/budget/household/budget_bot.py
+Restart=on-failure
+RestartSec=10
+
+# 환경변수 & 로그
+EnvironmentFile=/home/budget/household/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=budget_bot
+
+# 보안 hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/budget/household
+
+# 리소스 제한 (메모리 512MB / CPU 50%)
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
