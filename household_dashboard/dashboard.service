@@ -1,0 +1,18 @@
+[Unit]
+Description=가계부 웹 대시보드
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Household_accounts/dashboard
+EnvironmentFile=/root/Household_accounts/.env
+ExecStart=/root/Household_accounts/dashboard/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=10
+MemoryLimit=256M
+CPUQuota=30%
+
+[Install]
+WantedBy=multi-user.target

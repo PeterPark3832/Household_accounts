@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>가계부 대시보드</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230d1117'/><text x='4' y='26' font-size='24'>📊</text></svg>">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg:      #0d1117;
+  --card:    #161b22;
+  --border:  #30363d;
+  --text:    #e6edf3;
+  --muted:   #8b949e;
+  --income:  #3fb950;
+  --expense: #f85149;
+  --net:     #58a6ff;
+  --warn:    #d29922;
+}
+*,*::before,*::after{box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;min-height:100vh;padding-bottom:env(safe-area-inset-bottom);}
+button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
+
+/* ── Skeleton ────────────────────────────────────────────── */
+@keyframes shimmer{0%{background-position:-200% 0;}100%{background-position:200% 0;}}
+.skel{display:inline-block;width:100%;border-radius:5px;background:linear-gradient(90deg,var(--border) 25%,#242c38 50%,var(--border) 75%);background-size:200% 100%;animation:shimmer 1.4s ease-in-out infinite;}
+.skel-val{height:1.7rem;width:78%;}
+.skel-diff{height:.75rem;width:45%;margin-top:.4rem;}
+.skel-row{height:.85rem;margin-bottom:.55rem;}
+.skel-bar{height:.55rem;border-radius:3px;}
+
+/* ── Chart overlay ───────────────────────────────────────── */
+.chart-shell{position:relative;}
+.chart-cover{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.6rem;background:rgba(22,27,34,.75);border-radius:8px;z-index:6;backdrop-filter:blur(3px);transition:opacity .25s;}
+.chart-cover.hidden{opacity:0;pointer-events:none;}
+.chart-cover .spin{width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--net);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.cover-err-msg{font-size:.78rem;color:var(--muted);}
+.retry-btn{background:transparent;border:1px solid var(--border);color:var(--text);border-radius:6px;padding:.25rem .75rem;font-size:.78rem;cursor:pointer;transition:background .15s;}
+.retry-btn:hover{background:var(--border);}
+
+/* ── Header ─────────────────────────────────────────────── */
+.dash-header{background:var(--card);border-bottom:1px solid var(--border);padding:.875rem 1.5rem;position:sticky;top:0;z-index:200;}
+.brand{font-size:1.05rem;font-weight:700;}
+.refresh-dot{width:7px;height:7px;border-radius:50%;background:var(--income);display:inline-block;margin-left:2px;vertical-align:middle;animation:pulse 2s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.4;transform:scale(.7);}}
+.refresh-paused .refresh-dot{background:var(--muted);animation:none;}
+.month-nav{display:flex;align-items:center;gap:.5rem;}
+.month-nav button{background:transparent;border:1px solid var(--border);color:var(--text);border-radius:8px;width:36px;height:36px;cursor:pointer;transition:background .15s;font-size:.9rem;display:flex;align-items:center;justify-content:center;}
+.month-nav button:hover:not(:disabled){background:var(--border);}
+.month-nav button:active:not(:disabled){transform:scale(.92);}
+.month-nav button:disabled{opacity:.3;cursor:default;}
+#month-label{min-width:110px;text-align:center;font-weight:600;font-size:.95rem;}
+.swipe-hint{font-size:.65rem;color:var(--muted);text-align:center;display:none;}
+
+/* ── Main ────────────────────────────────────────────────── */
+.main{padding:1.25rem 1.5rem;max-width:1600px;margin:0 auto;}
+
+/* ── KPI Cards ───────────────────────────────────────────── */
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1.1rem 1.4rem 1rem;position:relative;overflow:hidden;transition:transform .2s;}
+.kpi:hover{transform:translateY(-2px);}
+.kpi::after{content:'';position:absolute;inset:0 0 auto 0;height:3px;}
+.kpi.income::after{background:var(--income);}
+.kpi.expense::after{background:var(--expense);}
+.kpi.net::after{background:var(--net);}
+.kpi.count::after{background:var(--warn);}
+.kpi-label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.3rem;}
+.kpi-value{font-size:1.55rem;font-weight:700;line-height:1.1;min-height:1.7rem;}
+.kpi.income  .kpi-value{color:var(--income);}
+.kpi.expense .kpi-value{color:var(--expense);}
+.kpi.net     .kpi-value{color:var(--net);}
+.kpi.count   .kpi-value{color:var(--warn);}
+.kpi-diff{font-size:.72rem;margin-top:.3rem;min-height:.9rem;}
+.kpi-icon{position:absolute;right:1.25rem;top:50%;transform:translateY(-50%);font-size:2.1rem;opacity:.1;}
+
+/* ── Stats Strip ─────────────────────────────────────────── */
+.stat-card{
+  background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:.75rem 1rem;display:flex;align-items:center;gap:.75rem;
+  height:100%;          /* 3칸 높이 일치 */
+}
+.stat-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0;}
+.stat-icon.avg{background:rgba(88,166,255,.15);color:var(--net);}
+.stat-icon.proj{background:rgba(210,153,34,.15);color:var(--warn);}
+.stat-icon.top{background:rgba(248,81,73,.15);color:var(--expense);}
+.stat-body{min-width:0;flex:1;}     /* 값 넘침 방지 */
+.stat-label{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+.stat-value{font-size:1rem;font-weight:700;line-height:1.2;overflow-wrap:anywhere;}
+.stat-sub{font-size:.68rem;color:var(--muted);margin-top:.1rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* ── Chart Cards ─────────────────────────────────────────── */
+.cc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1.1rem 1.25rem;}
+.cc-title{font-size:.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.9rem;}
+
+/* ── Calendar Heatmap ────────────────────────────────────── */
+#calendar-container{overflow:hidden;width:100%;}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;width:100%;}
+.cal-head{text-align:center;font-size:.65rem;color:var(--muted);padding:.2rem 0;}
+.cal-cell{
+  aspect-ratio:1;border-radius:6px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  cursor:pointer;transition:all .15s;position:relative;
+  min-width:0;           /* grid blowout 방지 */
+  overflow:hidden;       /* 내용이 셀을 넘지 않도록 */
+}
+.cal-cell.empty{cursor:default;opacity:0;}
+.cal-cell.i0{background:rgba(255,255,255,.04);}
+.cal-cell.i1{background:rgba(248,81,73,.2);}
+.cal-cell.i2{background:rgba(248,81,73,.45);}
+.cal-cell.i3{background:rgba(248,81,73,.7);}
+.cal-cell.i4{background:rgba(248,81,73,.92);}
+.cal-cell.today{box-shadow:0 0 0 1.5px var(--net);}
+.cal-cell.selected{box-shadow:0 0 0 2px #fff;}
+.cal-cell:hover:not(.empty){filter:brightness(1.2);}
+.cal-day{font-size:.7rem;font-weight:600;line-height:1;}
+.cal-amt{font-size:.55rem;color:rgba(255,255,255,.75);margin-top:1px;}
+.day-filter-badge{display:none;align-items:center;gap:.4rem;background:rgba(248,81,73,.15);border:1px solid rgba(248,81,73,.3);color:var(--expense);border-radius:6px;padding:.2rem .6rem;font-size:.75rem;margin-bottom:.5rem;}
+.day-filter-badge.show{display:inline-flex;}
+.day-filter-badge button{background:none;border:none;color:var(--expense);cursor:pointer;padding:0;font-size:.8rem;line-height:1;}
+
+/* ── Filter / Search ─────────────────────────────────────── */
+.fbtn{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:.3rem .85rem;font-size:.8rem;cursor:pointer;transition:all .15s;min-height:36px;display:inline-flex;align-items:center;}
+.fbtn.active{background:var(--net);border-color:var(--net);color:#fff;}
+.fbtn:active{transform:scale(.93);}
+.search-box{background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:.3rem .75rem;font-size:.85rem;outline:none;width:220px;height:36px;}
+.search-box:focus{border-color:var(--net);}
+
+/* ── Transaction Table ───────────────────────────────────── */
+.tx-outer{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.tx-outer::-webkit-scrollbar{height:4px;}
+.tx-outer::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.tx-wrap{max-height:420px;overflow-y:auto;}
+.tx-wrap::-webkit-scrollbar{width:5px;}
+.tx-wrap::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+.tx-table{font-size:.83rem;margin-bottom:0;min-width:480px;}
+.tx-table th{color:var(--muted);font-size:.7rem;font-weight:500;text-transform:uppercase;border-color:var(--border)!important;position:sticky;top:0;background:var(--card);z-index:10;white-space:nowrap;}
+.tx-table td{border-color:var(--border)!important;vertical-align:middle;}
+.tx-table tbody tr:hover{background:rgba(255,255,255,.03);}
+.badge-income{background:rgba(63,185,80,.15);color:var(--income);padding:.2rem .55rem;border-radius:4px;font-size:.75rem;white-space:nowrap;}
+.badge-expense{background:rgba(248,81,73,.15);color:var(--expense);padding:.2rem .55rem;border-radius:4px;font-size:.75rem;white-space:nowrap;}
+.top-row td{background:rgba(248,81,73,.08)!important;}
+
+/* ── Budget Bars ─────────────────────────────────────────── */
+.bud-item{margin-bottom:.85rem;}
+.bud-labels{display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:.25rem;flex-wrap:wrap;gap:.1rem;}
+.bud-labels span:last-child{color:var(--muted);}
+.bud-track{height:8px;background:var(--border);border-radius:4px;overflow:hidden;}
+.bud-fill{height:100%;border-radius:4px;transition:width .5s ease;}
+.bud-fill.safe{background:var(--income);}
+.bud-fill.warning{background:var(--warn);}
+.bud-fill.danger{background:var(--expense);}
+
+/* ── Annual Chart year nav ───────────────────────────────── */
+.year-nav button{background:transparent;border:1px solid var(--border);color:var(--text);border-radius:6px;width:28px;height:28px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:.8rem;}
+.year-nav button:hover{background:var(--border);}
+#annual-year-label{font-size:.9rem;font-weight:600;min-width:48px;text-align:center;}
+
+/* ── Misc ────────────────────────────────────────────────── */
+#pie-legend{font-size:.75rem;color:var(--muted);margin-top:.5rem;line-height:1.9;}
+.upd{font-size:.72rem;color:var(--muted);}
+.empty{color:var(--muted);font-size:.85rem;padding:2rem 0;text-align:center;}
+.tx-ctrl{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;}
+
+/* ══════════════ 공통 — 터치 기기 ══════════════ */
+@media(hover:none){
+  .kpi:hover{transform:none;}
+  /* cal-cell min-height 제거 — aspect-ratio:1과 충돌해 7열×38px이 컨테이너 초과 */
+  .year-nav button{width:38px;height:38px;border-radius:8px;}
+}
+
+/* ══════════════ 태블릿 576–767px ══════════════ */
+@media(min-width:576px) and (max-width:767.98px){
+  .main{padding:1rem;}
+  .kpi-value{font-size:1.3rem;}
+  .pie-h{height:240px!important;}
+  .trend-h{height:230px!important;}
+  .mem-h{height:230px!important;}
+  .comp-h{height:240px!important;}
+  .ann-h{height:210px!important;}
+  .tx-col-memo{display:none;}
+  .search-box{width:170px;}
+  .stat-value{font-size:.95rem;}
+}
+
+/* ══════════════ 모바일 ≤575px ══════════════ */
+@media(max-width:575.98px){
+  /* ─ 헤더 ─ */
+  .dash-header{padding:.55rem .75rem;}
+  .brand{font-size:.85rem;}
+  .month-nav button{width:42px;height:42px;border-radius:10px;}
+  #month-label{font-size:.85rem;min-width:96px;}
+  .swipe-hint{display:block;}
+  .upd{display:none;}
+
+  /* ─ 레이아웃 ─ */
+  .main{padding:.6rem .5rem;}
+
+  /* ─ KPI — 값이 길면 자동 축소 ─ */
+  .kpi{padding:.7rem .9rem .65rem;border-radius:10px;}
+  .kpi-label{font-size:.64rem;letter-spacing:.03em;}
+  .kpi-value{font-size:clamp(.9rem,4.2vw,1.3rem);word-break:break-all;}
+  .kpi-diff{font-size:.66rem;}
+  .kpi-icon{display:none;}           /* 아이콘 숨겨 공간 확보 */
+
+  /* ─ 통계 스트립 — 3칸 동일 높이, 수직 레이아웃 ─ */
+  .stat-card{
+    flex-direction:column;align-items:flex-start;
+    padding:.55rem .6rem;gap:.18rem;border-radius:8px;
+  }
+  .stat-icon{width:22px;height:22px;font-size:.62rem;border-radius:5px;flex-shrink:0;margin-bottom:.1rem;}
+  .stat-label{font-size:.58rem;letter-spacing:.02em;}
+  .stat-value{font-size:clamp(.75rem,3.5vw,.92rem);}
+  .stat-sub{font-size:.58rem;white-space:normal;line-height:1.3;}
+
+  /* ─ 차트 카드 ─ */
+  .cc{padding:.75rem .75rem;border-radius:10px;}
+  .cc-title{font-size:.64rem;margin-bottom:.55rem;}
+
+  /* ─ 차트 높이 ─ */
+  .pie-h{height:220px!important;}
+  .trend-h{height:200px!important;}
+  .mem-h{height:200px!important;}
+  .comp-h{height:220px!important;}
+  .ann-h{height:185px!important;}
+
+  /* ─ 파이 범례 — 2열 그리드 ─ */
+  #pie-legend{
+    display:grid;grid-template-columns:1fr 1fr;
+    gap:2px 4px;font-size:.68rem;margin-top:.4rem;line-height:1.6;
+  }
+
+  /* ─ 달력 히트맵 ─ */
+  .cal-grid{gap:2px;}
+  .cal-head{font-size:.6rem;padding:.15rem 0;}
+  .cal-cell{border-radius:4px;}      /* min-height 없음 — aspect-ratio가 크기 결정 */
+  .cal-day{font-size:.62rem;}
+  .cal-amt{font-size:.5rem;}
+
+  /* ─ 예산 바 — 레이블 2행 허용 ─ */
+  .bud-labels{flex-direction:column;gap:.15rem;margin-bottom:.3rem;}
+  .bud-labels span:first-child{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .bud-labels span:last-child{font-size:.68rem;}
+  #budget-wrap{max-height:260px;}
+
+  /* ─ 거래 내역 ─ */
+  .tx-ctrl{flex-direction:column;align-items:stretch;}
+  .tx-ctrl .d-flex{justify-content:space-between;}
+  .search-box{width:100%;height:40px;}
+  .fbtn{min-height:40px;font-size:.8rem;}
+  .tx-col-name,.tx-col-memo{display:none;}
+  .tx-table{min-width:280px;}
+  .tx-table td,.tx-table th{padding:.4rem .35rem;font-size:.76rem;}
+
+  /* ─ 연간 차트 ─ */
+  #annual-year-label{font-size:.85rem;}
+  .year-nav button{width:34px;height:34px;}
+}
+
+/* ══════════════ 매우 좁은 화면 ≤360px ══════════════ */
+@media(max-width:360px){
+  .kpi-value{font-size:clamp(.82rem,4vw,1.1rem);}
+  .stat-value{font-size:.8rem;}
+  .main{padding:.5rem .4rem;}
+}
+</style>
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────────── -->
+<header class="dash-header">
+  <div class="d-flex align-items-center justify-content-between gap-2">
+    <div class="d-flex align-items-center gap-2">
+      <i class="fas fa-chart-pie" style="color:var(--net);font-size:1.2rem;flex-shrink:0;"></i>
+      <span class="brand">가계부 대시보드</span>
+      <span class="refresh-dot" id="refresh-dot"></span>
+    </div>
+    <div>
+      <div class="month-nav">
+        <button onclick="prevMonth()" aria-label="이전 달"><i class="fas fa-chevron-left"></i></button>
+        <span id="month-label">--</span>
+        <button onclick="nextMonth()" id="btn-next" aria-label="다음 달"><i class="fas fa-chevron-right"></i></button>
+      </div>
+      <div class="swipe-hint">← 스와이프로 월 이동 →</div>
+    </div>
+  </div>
+  <div class="d-flex justify-content-end mt-1">
+    <span class="upd" id="upd-time"></span>
+  </div>
+</header>
+
+<!-- ── Main ──────────────────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- KPI -->
+  <div class="row g-2 g-md-3 mb-2 mb-md-3">
+    <div class="col-6 col-md-3"><div class="kpi income">
+      <div class="kpi-label">총 수입</div>
+      <div class="kpi-value" id="kpi-income"><div class="skel skel-val"></div></div>
+      <div class="kpi-diff"  id="kpi-diff-income"><div class="skel skel-diff"></div></div>
+      <div class="kpi-icon"><i class="fas fa-arrow-trend-up"></i></div>
+    </div></div>
+    <div class="col-6 col-md-3"><div class="kpi expense">
+      <div class="kpi-label">총 지출</div>
+      <div class="kpi-value" id="kpi-expense"><div class="skel skel-val"></div></div>
+      <div class="kpi-diff"  id="kpi-diff-expense"><div class="skel skel-diff"></div></div>
+      <div class="kpi-icon"><i class="fas fa-arrow-trend-down"></i></div>
+    </div></div>
+    <div class="col-6 col-md-3"><div class="kpi net">
+      <div class="kpi-label">순 증감</div>
+      <div class="kpi-value" id="kpi-net"><div class="skel skel-val"></div></div>
+      <div class="kpi-diff"  id="kpi-diff-net"><div class="skel skel-diff"></div></div>
+      <div class="kpi-icon"><i class="fas fa-scale-balanced"></i></div>
+    </div></div>
+    <div class="col-6 col-md-3"><div class="kpi count">
+      <div class="kpi-label">거래 건수</div>
+      <div class="kpi-value" id="kpi-count"><div class="skel skel-val"></div></div>
+      <div class="kpi-diff"  id="kpi-diff-count"><div class="skel skel-diff"></div></div>
+      <div class="kpi-icon"><i class="fas fa-receipt"></i></div>
+    </div></div>
+  </div>
+
+  <!-- Stats Strip: PC·모바일 공통 3열 — stat-card h-100으로 높이 통일 -->
+  <div class="row g-2 g-md-3 mb-2 mb-md-3">
+    <div class="col-4">
+      <div class="stat-card">
+        <div class="stat-icon avg"><i class="fas fa-calendar-day"></i></div>
+        <div class="stat-body">
+          <div class="stat-label">일평균 지출</div>
+          <div class="stat-value" id="stat-avg">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-4">
+      <div class="stat-card">
+        <div class="stat-icon proj"><i class="fas fa-chart-line"></i></div>
+        <div class="stat-body">
+          <div class="stat-label">월말 예상</div>
+          <div class="stat-value" id="stat-proj">—</div>
+          <div class="stat-sub" id="stat-proj-sub"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-4">
+      <div class="stat-card">
+        <div class="stat-icon top"><i class="fas fa-arrow-up-right-dots"></i></div>
+        <div class="stat-body">
+          <div class="stat-label">최고 단건</div>
+          <div class="stat-value" id="stat-top">—</div>
+          <div class="stat-sub" id="stat-top-sub"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts Row 1: Pie + Trend -->
+  <div class="row g-2 g-md-3 mb-2 mb-md-3">
+    <div class="col-12 col-lg-5">
+      <div class="cc h-100">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="cc-title mb-0">카테고리 분석</div>
+          <div class="d-flex gap-1">
+            <button class="fbtn active" id="pie-btn-exp" onclick="switchPie('expense')">지출</button>
+            <button class="fbtn"        id="pie-btn-inc" onclick="switchPie('income')">수입</button>
+          </div>
+        </div>
+        <div class="chart-shell pie-h" style="height:260px;">
+          <canvas id="pieChart"></canvas>
+          <div class="chart-cover" id="pie-cover"><div class="spin"></div></div>
+        </div>
+        <div id="pie-legend"></div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-7">
+      <div class="cc h-100">
+        <div class="cc-title">월간 트렌드 (최근 6개월)</div>
+        <div class="chart-shell trend-h" style="height:300px;">
+          <canvas id="trendChart"></canvas>
+          <div class="chart-cover" id="trend-cover"><div class="spin"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts Row 2: Calendar + Category Comparison -->
+  <div class="row g-2 g-md-3 mb-2 mb-md-3">
+    <!-- Calendar Heatmap -->
+    <div class="col-12 col-lg-5">
+      <div class="cc h-100">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="cc-title mb-0">일별 지출 현황</div>
+          <div id="day-filter-badge" class="day-filter-badge">
+            <span id="day-filter-label"></span>
+            <button onclick="clearDayFilter()" title="필터 해제">✕</button>
+          </div>
+        </div>
+        <div id="calendar-container"></div>
+      </div>
+    </div>
+    <!-- Category Comparison -->
+    <div class="col-12 col-lg-7">
+      <div class="cc h-100">
+        <div class="cc-title">카테고리 월 비교 (이번달 vs 지난달)</div>
+        <div class="chart-shell comp-h" style="height:280px;">
+          <canvas id="compChart"></canvas>
+          <div class="chart-cover" id="comp-cover"><div class="spin"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts Row 3: Budget + Members -->
+  <div class="row g-2 g-md-3 mb-2 mb-md-3">
+    <div class="col-12 col-lg-6">
+      <div class="cc h-100">
+        <div class="cc-title">예산 현황</div>
+        <div id="budget-skel">
+          <div class="skel skel-row" style="width:100%"></div><div class="skel skel-bar" style="width:100%;margin-bottom:.8rem"></div>
+          <div class="skel skel-row" style="width:85%"></div><div class="skel skel-bar" style="width:85%;margin-bottom:.8rem"></div>
+          <div class="skel skel-row" style="width:70%"></div><div class="skel skel-bar" style="width:70%;margin-bottom:.8rem"></div>
+          <div class="skel skel-row" style="width:55%"></div><div class="skel skel-bar" style="width:55%"></div>
+        </div>
+        <div id="budget-wrap" style="max-height:300px;overflow-y:auto;display:none;"></div>
+        <div id="budget-err" style="display:none;" class="text-center py-3">
+          <span class="cover-err-msg">로드 실패</span><br>
+          <button class="retry-btn mt-2" onclick="loadAll()">재시도</button>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-6">
+      <div class="cc h-100">
+        <div class="cc-title">구성원별 지출</div>
+        <div class="chart-shell mem-h" style="height:300px;">
+          <canvas id="memberChart"></canvas>
+          <div class="chart-cover" id="member-cover"><div class="spin"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Annual Summary -->
+  <div class="row g-2 g-md-3 mb-2 mb-md-3">
+    <div class="col-12">
+      <div class="cc">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="cc-title mb-0">연간 요약</div>
+          <div class="d-flex align-items-center gap-2 year-nav">
+            <button onclick="changeAnnualYear(-1)"><i class="fas fa-chevron-left"></i></button>
+            <span id="annual-year-label">--</span>
+            <button onclick="changeAnnualYear(1)" id="annual-next-btn"><i class="fas fa-chevron-right"></i></button>
+          </div>
+        </div>
+        <div class="chart-shell ann-h" style="height:200px;">
+          <canvas id="annualChart"></canvas>
+          <div class="chart-cover" id="annual-cover"><div class="spin"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transactions -->
+  <div class="row g-2 g-md-3">
+    <div class="col-12">
+      <div class="cc" id="tx-section">
+        <div class="d-flex justify-content-between align-items-start mb-2 gap-2">
+          <div class="cc-title mb-0" style="padding-top:.1rem;">거래 내역</div>
+          <div class="tx-ctrl">
+            <div class="d-flex gap-1" id="tx-filter-group">
+              <button class="fbtn active" onclick="filterTx('all',this)">전체</button>
+              <button class="fbtn"       onclick="filterTx('income',this)">수입</button>
+              <button class="fbtn"       onclick="filterTx('expense',this)">지출</button>
+            </div>
+            <input class="search-box" type="search" inputmode="search" placeholder="검색 (메모 · 카테고리 · 이름)" oninput="searchTx(this.value)">
+          </div>
+        </div>
+        <div id="tx-skel" style="padding:.25rem 0;">
+          <div style="display:flex;gap:.75rem;padding:.45rem 0;border-bottom:1px solid var(--border);"><div class="skel" style="width:90px;height:.8rem;flex-shrink:0;"></div><div class="skel" style="width:85%;height:.8rem;"></div></div>
+          <div style="display:flex;gap:.75rem;padding:.45rem 0;border-bottom:1px solid var(--border);"><div class="skel" style="width:90px;height:.8rem;flex-shrink:0;"></div><div class="skel" style="width:70%;height:.8rem;"></div></div>
+          <div style="display:flex;gap:.75rem;padding:.45rem 0;border-bottom:1px solid var(--border);"><div class="skel" style="width:90px;height:.8rem;flex-shrink:0;"></div><div class="skel" style="width:78%;height:.8rem;"></div></div>
+          <div style="display:flex;gap:.75rem;padding:.45rem 0;"><div class="skel" style="width:90px;height:.8rem;flex-shrink:0;"></div><div class="skel" style="width:60%;height:.8rem;"></div></div>
+        </div>
+        <div class="tx-outer" style="display:none;" id="tx-real">
+          <div class="tx-wrap">
+            <table class="table table-borderless tx-table">
+              <thead><tr>
+                <th>날짜</th>
+                <th class="tx-col-name">이름</th>
+                <th>유형</th>
+                <th>카테고리</th>
+                <th class="text-end">금액</th>
+                <th class="tx-col-memo">메모</th>
+              </tr></thead>
+              <tbody id="tx-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="tx-err" style="display:none;" class="text-center py-3">
+          <span class="cover-err-msg">거래 내역 로드 실패</span><br>
+          <button class="retry-btn mt-2" onclick="loadAll()">재시도</button>
+        </div>
+        <div class="upd mt-1" id="tx-count-label"></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let CY = {{ current_year }}, CM = {{ current_month }};
+let annualYear = {{ current_year }};
+let allTx = [], txFilter = 'all', txSearch = '', txDayFilter = null;
+let pieMode = 'expense';
+let pieChart = null, trendChart = null, memberChart = null, compChart = null, annualChart = null;
+let _dashData   = null;
+let _trendData  = null;   // resize 재렌더용 캐시
+let _trendVer   = 0;      // 경쟁 조건 방지 버전 카운터
+
+const COLORS = ['#4C72B0','#55A868','#C44E52','#DD8452','#8172B2','#64B5CD','#CCB974','#DA8BC3','#4CAF50','#FF9800','#937860','#8C8C8C','#E91E63','#00BCD4','#9C27B0'];
+
+// ── Auto-refresh ───────────────────────────────────────────────────────────────
+const REFRESH_MS = 5 * 60 * 1000;
+let lastRefresh = 0, refreshTimer = null;
+function startAutoRefresh() {
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => { if (document.visibilityState === 'visible') loadAll(); }, REFRESH_MS);
+}
+document.addEventListener('visibilitychange', () => {
+  const dot = document.getElementById('refresh-dot');
+  if (document.visibilityState === 'visible') {
+    dot && dot.parentElement.classList.remove('refresh-paused');
+    if (Date.now() - lastRefresh > REFRESH_MS) loadAll();
+  } else {
+    dot && dot.parentElement.classList.add('refresh-paused');
+  }
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+const isMobile = () => window.innerWidth < 576;
+const fmt      = n => '₩' + Math.abs(Math.round(n)).toLocaleString('ko-KR');
+const fmtSgn   = n => (n >= 0 ? '+' : '−') + fmt(n);
+const fmtShort = n => Math.abs(n) >= 1e6 ? (n/1e6).toFixed(1)+'M' : Math.abs(n) >= 1e3 ? (Math.round(n/1e3))+'K' : String(Math.round(n));
+const fmtDate  = s => !s ? '—' : isMobile() ? s.slice(5,10) : s.slice(0,16);
+
+function showCover(id)  { const e=document.getElementById(id); if(e){e.classList.remove('hidden');e.innerHTML='<div class="spin"></div>';} }
+function hideCover(id)  { const e=document.getElementById(id); if(e) e.classList.add('hidden'); }
+function errorCover(id, fn) {
+  const e = document.getElementById(id);
+  if (!e) return;
+  e.classList.remove('hidden');
+  e.innerHTML = `<span class="cover-err-msg">로드 실패</span><button class="retry-btn" onclick="${fn}()">재시도</button>`;
+}
+async function get(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// ── Month nav ──────────────────────────────────────────────────────────────────
+function updateMonthLabel() {
+  document.getElementById('month-label').textContent = `${CY}년 ${String(CM).padStart(2,'0')}월`;
+  const now = new Date();
+  document.getElementById('btn-next').disabled = CY===now.getFullYear() && CM===now.getMonth()+1;
+}
+function prevMonth() { if(CM===1){CM=12;CY--;}else CM--; loadAll(); }
+function nextMonth() {
+  const now=new Date();
+  if(CY>now.getFullYear()||(CY===now.getFullYear()&&CM>=now.getMonth()+1)) return;
+  if(CM===12){CM=1;CY++;}else CM++;
+  loadAll();
+}
+
+// ── Swipe ──────────────────────────────────────────────────────────────────────
+let _tx=0,_ty=0;
+document.addEventListener('touchstart',e=>{_tx=e.touches[0].clientX;_ty=e.touches[0].clientY;},{passive:true});
+document.addEventListener('touchend',e=>{
+  const dx=e.changedTouches[0].clientX-_tx, dy=e.changedTouches[0].clientY-_ty;
+  if(Math.abs(dx)>55&&Math.abs(dx)>Math.abs(dy)*1.5) dx<0?nextMonth():prevMonth();
+},{passive:true});
+
+// ── Load All (2-phase) ─────────────────────────────────────────────────────────
+async function loadAll() {
+  updateMonthLabel();
+  lastRefresh = Date.now();
+  _dashData = null;
+  txDayFilter = null;
+  document.getElementById('day-filter-badge').classList.remove('show');
+
+  // 스켈레톤
+  showCover('pie-cover'); showCover('trend-cover'); showCover('member-cover'); showCover('comp-cover');
+  document.getElementById('budget-skel').style.display = '';
+  document.getElementById('budget-wrap').style.display = 'none';
+  document.getElementById('budget-err').style.display  = 'none';
+  document.getElementById('tx-skel').style.display     = '';
+  document.getElementById('tx-real').style.display     = 'none';
+  document.getElementById('tx-err').style.display      = 'none';
+
+  // Phase 1: 핵심 데이터
+  try {
+    _dashData = await get(`/api/dashboard?year=${CY}&month=${CM}`);
+    renderSummary(_dashData.summary);
+    renderComparison(_dashData.comparison);
+    renderMiniStats(_dashData.summary, _dashData.transactions);
+    renderPie(_dashData[`breakdown_${pieMode}`]); hideCover('pie-cover');
+    renderMembers(_dashData.members);             hideCover('member-cover');
+    renderCalendar(_dashData.transactions);
+    renderCategoryComp(_dashData.breakdown_expense, _dashData.prev_breakdown_expense); hideCover('comp-cover');
+    renderBudgets(_dashData.budgets);
+    document.getElementById('budget-skel').style.display = 'none';
+    document.getElementById('budget-wrap').style.display = '';
+    allTx = _dashData.transactions;
+    document.getElementById('tx-skel').style.display = 'none';
+    document.getElementById('tx-real').style.display = '';
+    renderTx();
+  } catch(e) {
+    console.error('dashboard error', e);
+    ['kpi-income','kpi-expense','kpi-net','kpi-count'].forEach(id => {
+      const el = document.getElementById(id);
+      if(el) el.innerHTML = `<button class="retry-btn" style="font-size:.75rem;" onclick="loadAll()">재시도</button>`;
+    });
+    ['kpi-diff-income','kpi-diff-expense','kpi-diff-net','kpi-diff-count']
+      .forEach(id => { const el=document.getElementById(id); if(el) el.innerHTML=''; });
+    errorCover('pie-cover','loadAll'); errorCover('member-cover','loadAll'); errorCover('comp-cover','loadAll');
+    document.getElementById('budget-skel').style.display = 'none';
+    document.getElementById('budget-err').style.display  = '';
+    document.getElementById('tx-skel').style.display     = 'none';
+    document.getElementById('tx-err').style.display      = '';
+  }
+
+  // Phase 2: 트렌드 (독립 비동기)
+  loadTrend();
+  document.getElementById('upd-time').textContent = '업데이트 ' + new Date().toLocaleTimeString('ko-KR');
+}
+
+// ── Summary & Comparison ───────────────────────────────────────────────────────
+function renderSummary(d) {
+  document.getElementById('kpi-income').textContent  = fmt(d.income);
+  document.getElementById('kpi-expense').textContent = fmt(d.expense);
+  const netEl = document.getElementById('kpi-net');
+  netEl.textContent = fmtSgn(d.net);
+  netEl.style.color = d.net >= 0 ? 'var(--income)' : 'var(--expense)';
+  document.getElementById('kpi-count').textContent = d.transaction_count + '건';
+}
+function renderComparison(d) {
+  const renderDiff = (id, pct, higherIsBad) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (pct == null) { el.innerHTML = ''; return; }
+    const up = pct > 0, flat = Math.abs(pct) < 0.1;
+    const good = higherIsBad ? !up : up;
+    const color = flat ? 'var(--muted)' : good ? 'var(--income)' : 'var(--expense)';
+    const label = flat ? '전월 동일' : `${up?'▲':'▼'} ${Math.abs(pct)}% 전월比`;
+    el.innerHTML = `<span style="color:${color};">${label}</span>`;
+  };
+  renderDiff('kpi-diff-income',  d.change.income,  false);
+  renderDiff('kpi-diff-expense', d.change.expense, true);
+  renderDiff('kpi-diff-net',     d.change.net,     false);
+  renderDiff('kpi-diff-count',   d.change.count,   false);
+}
+
+// ── Mini Stats ─────────────────────────────────────────────────────────────────
+function renderMiniStats(summary, transactions) {
+  const now = new Date();
+  const isCurrentMonth = CY === now.getFullYear() && CM === now.getMonth() + 1;
+  const daysElapsed    = isCurrentMonth ? now.getDate() : new Date(CY, CM, 0).getDate();
+  const daysInMonth    = new Date(CY, CM, 0).getDate();
+
+  const dailyAvg   = daysElapsed > 0 ? summary.expense / daysElapsed : 0;
+  const projection = dailyAvg * daysInMonth;
+  const projSub    = isCurrentMonth ? `${daysElapsed}일 기준 추산` : '월 전체 기준';
+  const projColor  = projection > summary.expense ? 'var(--warn)' : 'var(--text)';
+
+  const topTx = transactions
+    .filter(t => t.type === 'expense')
+    .reduce((max, t) => parseFloat(t.amount) > parseFloat(max?.amount||0) ? t : max, null);
+
+  const setEl = (id, val, color) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (typeof val === 'string') el.textContent = val;
+    if (color) el.style.color = color;
+  };
+  setEl('stat-avg',      fmt(dailyAvg));
+  setEl('stat-proj',     fmt(projection), projColor);
+  setEl('stat-proj-sub', projSub);
+  setEl('stat-top',      topTx ? fmt(topTx.amount) : '—');
+  setEl('stat-top-sub',  topTx ? (topTx.category || topTx.memo || '—') : '');
+}
+
+// ── Pie Chart ──────────────────────────────────────────────────────────────────
+async function loadBreakdown(type) {
+  if (_dashData) { renderPie(_dashData[`breakdown_${type}`] || {}); hideCover('pie-cover'); return; }
+  showCover('pie-cover');
+  try {
+    const d = await get(`/api/breakdown?year=${CY}&month=${CM}&record_type=${type}`);
+    renderPie(d.breakdown); hideCover('pie-cover');
+  } catch(e) { errorCover('pie-cover','loadAll'); }
+}
+function renderPie(data) {
+  const labels=Object.keys(data), values=Object.values(data);
+  const total=values.reduce((a,b)=>a+b,0);
+  const ctx=document.getElementById('pieChart').getContext('2d');
+  if(pieChart) pieChart.destroy();
+  pieChart = new Chart(ctx, {
+    type:'doughnut',
+    data:{ labels, datasets:[{ data:values, backgroundColor:COLORS.slice(0,labels.length), borderColor:'#161b22', borderWidth:2, hoverOffset:isMobile()?4:8 }] },
+    options:{ responsive:true, maintainAspectRatio:false, cutout:'62%',
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>{ const pct=total>0?(c.parsed/total*100).toFixed(1):0; return ` ${fmt(c.parsed)}  (${pct}%)`; }}} }
+    }
+  });
+  const n = isMobile() ? 6 : labels.length;
+  document.getElementById('pie-legend').innerHTML =
+    labels.slice(0,n).map((l,i)=>{
+      const pct = total > 0 ? (values[i]/total*100).toFixed(0) : 0;
+      return `<span style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 2px 0;">
+        <span style="width:8px;height:8px;border-radius:50%;background:${COLORS[i]};display:inline-block;flex-shrink:0;"></span>${l} ${pct}%</span>`;
+    }).join('') + (labels.length>n ? `<span style="color:var(--muted)"> 외 ${labels.length-n}개</span>` : '');
+}
+function switchPie(type) {
+  pieMode = type;
+  document.getElementById('pie-btn-exp').classList.toggle('active', type==='expense');
+  document.getElementById('pie-btn-inc').classList.toggle('active', type==='income');
+  loadBreakdown(type);
+}
+
+// ── Trend — 버전 카운터로 경쟁 조건 방지 ──────────────────────────────────────
+async function loadTrend() {
+  const myVer = ++_trendVer;
+  showCover('trend-cover');
+  try {
+    const d = await get('/api/trend?months=6');
+    if (myVer !== _trendVer) return;   // 더 최신 요청이 있으면 이 응답 버림
+    _trendData = d;
+    renderTrend(d);
+    hideCover('trend-cover');
+  } catch(e) {
+    if (myVer !== _trendVer) return;
+    errorCover('trend-cover', 'loadTrend');
+  }
+}
+function renderTrend(data) {
+  const ctx=document.getElementById('trendChart').getContext('2d');
+  if(trendChart) trendChart.destroy();
+  const abbr=v=>Math.abs(v)>=1e6?(v/1e6).toFixed(1)+'M':Math.abs(v)>=1e3?(v/1e3).toFixed(0)+'K':v;
+  const fs=isMobile()?10:11;
+  trendChart = new Chart(ctx,{
+    type:'bar',
+    data:{ labels:data.map(d=>isMobile()?`${d.month}월`:d.label),
+      datasets:[
+        {label:'수입', data:data.map(d=>d.income),  backgroundColor:'rgba(63,185,80,.7)',  borderRadius:4,order:2},
+        {label:'지출', data:data.map(d=>d.expense), backgroundColor:'rgba(248,81,73,.7)', borderRadius:4,order:2},
+        {label:'순증감',data:data.map(d=>d.net), type:'line',
+         borderColor:'rgba(88,166,255,.9)',backgroundColor:'transparent',
+         pointBackgroundColor:'#58a6ff',borderWidth:2,tension:.3,pointRadius:isMobile()?2:4,order:1}
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{labels:{color:'#8b949e',font:{size:fs},boxWidth:10,padding:12}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmt(c.parsed.y)}`}} },
+      scales:{ x:{ticks:{color:'#8b949e',font:{size:fs}},grid:{color:'#30363d'}},
+        y:{ticks:{color:'#8b949e',callback:abbr,font:{size:fs}},grid:{color:'#30363d'}} }
+    }
+  });
+}
+
+// ── Calendar Heatmap ───────────────────────────────────────────────────────────
+function renderCalendar(transactions) {
+  const daysInMonth = new Date(CY, CM, 0).getDate();
+  const firstDay    = new Date(CY, CM-1, 1).getDay(); // 0=Sun
+  const daily = {};
+  transactions.filter(t=>t.type==='expense').forEach(t => {
+    const d = parseInt((t.date||'').slice(8,10));
+    if(d>=1&&d<=daysInMonth) daily[d] = (daily[d]||0) + parseFloat(t.amount);
+  });
+  const maxAmt = Math.max(...Object.values(daily), 1);
+  const now = new Date();
+  const isCurrentMonth = CY===now.getFullYear() && CM===now.getMonth()+1;
+
+  const DAY_NAMES = ['일','월','화','수','목','금','토'];
+  let html = '<div class="cal-grid">';
+  DAY_NAMES.forEach(d => html += `<div class="cal-head">${d}</div>`);
+  for(let i=0;i<firstDay;i++) html += '<div class="cal-cell empty"></div>';
+  for(let d=1;d<=daysInMonth;d++){
+    const amt = daily[d]||0;
+    const ratio = amt/maxAmt;
+    const intensity = amt===0?0:ratio<0.25?1:ratio<0.5?2:ratio<0.8?3:4;
+    const isToday = isCurrentMonth && d===now.getDate();
+    const isSelected = d===txDayFilter;
+    html += `<div class="cal-cell i${intensity}${isToday?' today':''}${isSelected?' selected':''}" onclick="filterByDay(${d})" title="${d}일${amt>0?' ₩'+Math.round(amt).toLocaleString('ko-KR'):''}">
+      <span class="cal-day">${d}</span>
+      ${amt>0?`<span class="cal-amt">${fmtShort(amt)}</span>`:''}
+    </div>`;
+  }
+  html += '</div>';
+  document.getElementById('calendar-container').innerHTML = html;
+}
+
+function filterByDay(day) {
+  txDayFilter = txDayFilter === day ? null : day;
+  renderCalendar(_dashData?.transactions || allTx);
+  const badge = document.getElementById('day-filter-badge');
+  if(txDayFilter) {
+    badge.classList.add('show');
+    document.getElementById('day-filter-label').textContent = `${CM}월 ${txDayFilter}일`;
+  } else {
+    badge.classList.remove('show');
+  }
+  renderTx();
+  if(txDayFilter) document.getElementById('tx-section').scrollIntoView({behavior:'smooth', block:'start'});
+}
+function clearDayFilter() { filterByDay(txDayFilter); }
+
+// ── Category Comparison ────────────────────────────────────────────────────────
+function renderCategoryComp(curBd, prevBd) {
+  const allCats = [...new Set([...Object.keys(curBd||{}), ...Object.keys(prevBd||{})])];
+  allCats.sort((a,b) => (curBd[b]||0) - (curBd[a]||0));
+  // 모바일에서 5개, PC에서 8개
+  const maxCats = isMobile() ? 5 : 8;
+  const cats = allCats.slice(0, maxCats);
+
+  const ctx = document.getElementById('compChart').getContext('2d');
+  if(compChart) compChart.destroy();
+  const abbr = v => Math.abs(v)>=1e6?(v/1e6).toFixed(1)+'M':Math.abs(v)>=1e3?(v/1e3).toFixed(0)+'K':v;
+  const fs = isMobile() ? 10 : 11;
+
+  if(!cats.length) {
+    hideCover('comp-cover');
+    ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+    ctx.fillStyle='#8b949e'; ctx.textAlign='center'; ctx.font='13px sans-serif';
+    ctx.fillText('데이터 없음', ctx.canvas.width/2, ctx.canvas.height/2);
+    return;
+  }
+
+  // 모바일: 세로 막대(indexAxis x), PC: 가로 막대(indexAxis y)
+  const axis = isMobile() ? 'x' : 'y';
+
+  compChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: cats,
+      datasets: [
+        { label:'이번달', data:cats.map(c=>curBd[c]||0),  backgroundColor:'rgba(88,166,255,.75)', borderRadius:4 },
+        { label:'지난달', data:cats.map(c=>prevBd[c]||0), backgroundColor:'rgba(255,255,255,.15)', borderRadius:4 }
+      ]
+    },
+    options: {
+      indexAxis: axis,
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode:'index', intersect:false },
+      plugins: {
+        legend: { labels:{ color:'#8b949e', font:{size:fs}, boxWidth:10, padding:10 } },
+        tooltip: { callbacks:{ label:c=>` ${c.dataset.label}: ${fmt(isMobile()?c.parsed.y:c.parsed.x)}` }}
+      },
+      scales: isMobile() ? {
+        // 세로 막대: x=카테고리, y=금액
+        x: { ticks:{ color:'#8b949e', font:{size:9}, maxRotation:30, minRotation:15 }, grid:{color:'transparent'} },
+        y: { ticks:{ color:'#8b949e', callback:abbr, font:{size:9} }, grid:{color:'#30363d'} }
+      } : {
+        // 가로 막대: y=카테고리, x=금액
+        x: { ticks:{ color:'#8b949e', callback:abbr, font:{size:fs} }, grid:{color:'#30363d'} },
+        y: { ticks:{ color:'#8b949e', font:{size:fs} }, grid:{color:'transparent'} }
+      }
+    }
+  });
+}
+
+// ── Members ────────────────────────────────────────────────────────────────────
+async function loadMembers() {
+  if(_dashData){ renderMembers(_dashData.members); hideCover('member-cover'); return; }
+}
+function renderMembers(data) {
+  const names=Object.keys(data);
+  const ctx=document.getElementById('memberChart').getContext('2d');
+  if(memberChart) memberChart.destroy();
+  if(!names.length){ hideCover('member-cover'); return; }
+  const fs=isMobile()?10:11;
+  memberChart = new Chart(ctx,{
+    type:'bar',
+    data:{ labels:names,
+      datasets:[
+        {label:'수입',data:names.map(n=>data[n].income||0),  backgroundColor:'rgba(63,185,80,.7)',  borderRadius:4},
+        {label:'지출',data:names.map(n=>data[n].expense||0), backgroundColor:'rgba(248,81,73,.7)', borderRadius:4}
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{labels:{color:'#8b949e',font:{size:fs},boxWidth:10}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmt(c.parsed.y)}`}} },
+      scales:{
+        x:{ticks:{color:'#8b949e',font:{size:fs}},grid:{color:'#30363d'}},
+        y:{ticks:{color:'#8b949e',callback:v=>Math.abs(v)>=1e6?(v/1e6).toFixed(1)+'M':Math.abs(v)>=1e3?(v/1e3).toFixed(0)+'K':v,font:{size:fs}},grid:{color:'#30363d'}}
+      }
+    }
+  });
+}
+
+// ── Budgets ────────────────────────────────────────────────────────────────────
+function renderBudgets(data) {
+  const wrap=document.getElementById('budget-wrap');
+  if(!data.length){ wrap.innerHTML='<div class="empty">예산이 설정되지 않았습니다</div>'; return; }
+  wrap.innerHTML=data.map(b=>{
+    const pct=Math.min(b.percentage,100);
+    const cls=b.over_budget?'danger':b.percentage>=80?'warning':'safe';
+    const pctLabel=b.budget>0?`${b.percentage.toFixed(0)}%`:'예산 없음';
+    const acc=b.over_budget?'expense':b.percentage>=80?'warn':'income';
+    return `<div class="bud-item">
+      <div class="bud-labels"><span>${b.category}</span>
+      <span>${fmt(b.actual)} / ${b.budget>0?fmt(b.budget):'—'} <span style="color:var(--${acc})">(${pctLabel})</span></span></div>
+      <div class="bud-track"><div class="bud-fill ${cls}" style="width:${pct}%"></div></div>
+    </div>`;
+  }).join('');
+}
+
+// ── Annual ─────────────────────────────────────────────────────────────────────
+function updateAnnualLabel() {
+  document.getElementById('annual-year-label').textContent = annualYear;
+  document.getElementById('annual-next-btn').disabled = annualYear >= new Date().getFullYear();
+}
+function changeAnnualYear(delta) {
+  annualYear += delta;
+  updateAnnualLabel();
+  loadAnnual();
+}
+async function loadAnnual() {
+  showCover('annual-cover');
+  try {
+    const d = await get(`/api/annual?year=${annualYear}`);
+    renderAnnual(d); hideCover('annual-cover');
+  } catch(e) { errorCover('annual-cover','loadAnnual'); }
+}
+function renderAnnual(data) {
+  const ctx=document.getElementById('annualChart').getContext('2d');
+  if(annualChart) annualChart.destroy();
+  const abbr=v=>Math.abs(v)>=1e6?(v/1e6).toFixed(1)+'M':Math.abs(v)>=1e3?(v/1e3).toFixed(0)+'K':v;
+  const fs=isMobile()?10:11;
+  // 모바일: '1','2'... PC: '1월','2월'...
+  const labels = data.map(d=>isMobile()?String(d.month):d.label);
+  annualChart = new Chart(ctx,{
+    type:'bar',
+    data:{ labels,
+      datasets:[
+        {label:'수입', data:data.map(d=>d.income),  backgroundColor:'rgba(63,185,80,.65)',  borderRadius:3,order:2},
+        {label:'지출', data:data.map(d=>d.expense), backgroundColor:'rgba(248,81,73,.65)', borderRadius:3,order:2},
+        {label:'순증감',data:data.map(d=>d.net), type:'line',
+         borderColor:'rgba(88,166,255,.8)',backgroundColor:'transparent',
+         pointBackgroundColor:'#58a6ff',borderWidth:1.5,tension:.3,pointRadius:isMobile()?2:3,order:1}
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{labels:{color:'#8b949e',font:{size:fs},boxWidth:10,padding:10}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmt(c.parsed.y)}`}} },
+      scales:{
+        x:{ticks:{color:'#8b949e',font:{size:fs}},grid:{color:'#30363d'}},
+        y:{ticks:{color:'#8b949e',callback:abbr,font:{size:fs}},grid:{color:'#30363d'}}
+      }
+    }
+  });
+}
+
+// ── Transactions ───────────────────────────────────────────────────────────────
+function renderTx() {
+  let data = allTx;
+  if(txFilter !== 'all') data = data.filter(t=>t.type===txFilter);
+  if(txSearch){
+    const q=txSearch.toLowerCase();
+    data=data.filter(t=>(t.memo||'').toLowerCase().includes(q)||(t.category||'').toLowerCase().includes(q)||(t.display_name||'').toLowerCase().includes(q));
+  }
+  if(txDayFilter != null){
+    const dayStr = String(txDayFilter).padStart(2,'0');
+    const prefix = `${CY}-${String(CM).padStart(2,'0')}-${dayStr}`;
+    data = data.filter(t=>(t.date||'').startsWith(prefix));
+  }
+  document.getElementById('tx-count-label').textContent = `총 ${data.length}건`;
+  const topAmt = data.filter(t=>t.type==='expense').reduce((m,t)=>Math.max(m,parseFloat(t.amount)),0);
+  const tbody  = document.getElementById('tx-body');
+  if(!data.length){ tbody.innerHTML='<tr><td colspan="6" class="empty">거래 내역이 없습니다</td></tr>'; return; }
+  tbody.innerHTML = data.map(t=>{
+    const inc   = t.type==='income';
+    const color = inc?'var(--income)':'var(--expense)';
+    const sign  = inc?'+':'−';
+    const isTop = !inc && parseFloat(t.amount)===topAmt && topAmt>0;
+    return `<tr class="${isTop?'top-row':''}">
+      <td style="color:var(--muted);white-space:nowrap;">${fmtDate(t.date)}</td>
+      <td class="tx-col-name">${t.display_name||'—'}</td>
+      <td><span class="badge-${t.type}">${inc?'수입':'지출'}</span></td>
+      <td style="white-space:nowrap;">${t.category||'—'}</td>
+      <td class="text-end" style="color:${color};font-weight:600;white-space:nowrap;">${sign}${fmt(t.amount)}${isTop?' 🔺':''}</td>
+      <td class="tx-col-memo" style="color:var(--muted);">${t.memo||''}</td>
+    </tr>`;
+  }).join('');
+}
+function filterTx(type,btn){
+  txFilter=type;
+  document.querySelectorAll('#tx-filter-group .fbtn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTx();
+}
+function searchTx(q){ txSearch=q; renderTx(); }
+
+// ── Resize — 캐시 데이터로 재렌더 (네트워크 요청 없음) ────────────────────────
+let _rTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(_rTimer);
+  _rTimer = setTimeout(() => {
+    if (_trendData) {
+      if (trendChart) { trendChart.destroy(); trendChart = null; }
+      renderTrend(_trendData);
+    }
+  }, 300);
+});
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  annualYear = CY;
+  updateAnnualLabel();
+  loadAll();
+  loadAnnual();
+  startAutoRefresh();
+});
+</script>
+</body>
+</html>
