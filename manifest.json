@@ -1,0 +1,29 @@
+{
+  "name": "Parcadia — 테마파크 경영 게임",
+  "short_name": "Parcadia",
+  "description": "방문객을 끌어모으고 최고의 테마파크를 건설하는 무료 경영 시뮬레이션 게임",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080B20",
+  "theme_color": "#080B20",
+  "orientation": "landscape-primary",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/og-image.svg",
+      "sizes": "1280x630",
+      "type": "image/svg+xml",
+      "label": "Parcadia 메인 화면"
+    }
+  ],
+  "categories": ["games", "entertainment"],
+  "related_applications": []
+}
