@@ -49,6 +49,43 @@ DASH_USER = os.environ.get("DASHBOARD_USER", "admin")
 DASH_PASS = os.environ.get("DASHBOARD_PASS", "change_me_please")
 
 
+def build_budget_report(budgets: dict, actuals: dict) -> list:
+    """예산 vs 실지출 비교 리스트를 반환합니다 (실지출 내림차순 정렬).
+
+    budgets: {category: budget_amount}
+    actuals: {category: actual_amount}  (monthly_breakdown 결과)
+    """
+    result: list[dict] = []
+    seen: set[str] = set()
+    for category, budget_amount in budgets.items():
+        actual = actuals.get(category, 0)
+        pct = (actual / budget_amount * 100) if budget_amount > 0 else 0
+        result.append({
+            "category": category,
+            "budget": budget_amount,
+            "actual": actual,
+            "percentage": round(pct, 1),
+            "over_budget": actual > budget_amount,
+        })
+        seen.add(category)
+    for cat, actual in actuals.items():
+        if cat not in seen:
+            result.append({
+                "category": cat, "budget": 0,
+                "actual": actual, "percentage": 100,
+                "over_budget": True,
+            })
+    result.sort(key=lambda x: x["actual"], reverse=True)
+    return result
+
+
+def pct_change(current: float, previous: float) -> float | None:
+    """이전 값 대비 변화율(%)을 반환합니다. 이전 값이 0이면 None."""
+    if previous == 0:
+        return None
+    return round((current - previous) / abs(previous) * 100, 1)
+
+
 def verify(credentials: HTTPBasicCredentials = Depends(security)):
     ok_user = secrets.compare_digest(credentials.username.encode(), DASH_USER.encode())
     ok_pass = secrets.compare_digest(credentials.password.encode(), DASH_PASS.encode())
@@ -179,21 +216,16 @@ async def api_comparison(year: int = Query(None), month: int = Query(None)):
             exp = sheets.monthly_total(recs, "expense")
             return {"income": inc, "expense": exp, "net": inc - exp, "count": len(recs)}
 
-        def pct(cur, prev):
-            if prev == 0:
-                return None
-            return round((cur - prev) / abs(prev) * 100, 1)
-
         cur  = summary(cur_recs)
         prev = summary(prev_recs)
         return {
             "current":  cur,
             "previous": prev,
             "change": {
-                "income":  pct(cur["income"],  prev["income"]),
-                "expense": pct(cur["expense"], prev["expense"]),
-                "net":     pct(cur["net"],     prev["net"]),
-                "count":   pct(cur["count"],   prev["count"]),
+                "income":  pct_change(cur["income"],  prev["income"]),
+                "expense": pct_change(cur["expense"], prev["expense"]),
+                "net":     pct_change(cur["net"],     prev["net"]),
+                "count":   pct_change(cur["count"],   prev["count"]),
             },
         }
     except Exception as e:
@@ -270,30 +302,7 @@ async def api_budgets(
         records = await run_sync(sheets.get_records_for_month, year, month)
         actuals = sheets.monthly_breakdown(records, "expense")
 
-        result = []
-        seen: set[str] = set()
-        for category, budget_amount in budgets.items():
-            actual = actuals.get(category, 0)
-            pct = (actual / budget_amount * 100) if budget_amount > 0 else 0
-            result.append({
-                "category": category,
-                "budget": budget_amount,
-                "actual": actual,
-                "percentage": round(pct, 1),
-                "over_budget": actual > budget_amount,
-            })
-            seen.add(category)
-
-        for cat, actual in actuals.items():
-            if cat not in seen:
-                result.append({
-                    "category": cat, "budget": 0,
-                    "actual": actual, "percentage": 100,
-                    "over_budget": True,
-                })
-
-        result.sort(key=lambda x: x["actual"], reverse=True)
-        return result
+        return build_budget_report(budgets, actuals)
     except Exception as e:
         logger.error("api_budgets(%d, %d) failed: %s", year, month, e, exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -330,25 +339,11 @@ async def api_dashboard(year: int = Query(None), month: int = Query(None)):
         budgets_raw = await run_sync(sheets.get_all_budgets_for_month, user_id, year, month) \
                       if user_id else {}
 
-        def pct(a, b):
-            return round((a - b) / abs(b) * 100, 1) if b else None
-
         ci, ce  = sheets.monthly_total(cur_recs,  "income"), sheets.monthly_total(cur_recs,  "expense")
         pi_, pe = sheets.monthly_total(prev_recs, "income"), sheets.monthly_total(prev_recs, "expense")
 
         actuals = sheets.monthly_breakdown(cur_recs, "expense")
-        budgets_list, seen = [], set()
-        for cat, bamt in budgets_raw.items():
-            actual = actuals.get(cat, 0)
-            p = (actual / bamt * 100) if bamt > 0 else 0
-            budgets_list.append({"category": cat, "budget": bamt, "actual": actual,
-                                  "percentage": round(p, 1), "over_budget": actual > bamt})
-            seen.add(cat)
-        for cat, actual in actuals.items():
-            if cat not in seen:
-                budgets_list.append({"category": cat, "budget": 0, "actual": actual,
-                                     "percentage": 100, "over_budget": True})
-        budgets_list.sort(key=lambda x: x["actual"], reverse=True)
+        budgets_list = build_budget_report(budgets_raw, actuals)
 
         inc_by = sheets.breakdown_by_user(cur_recs, "income")
         exp_by = sheets.breakdown_by_user(cur_recs, "expense")
@@ -368,10 +363,10 @@ async def api_dashboard(year: int = Query(None), month: int = Query(None)):
                 "current":  {"income": ci,  "expense": ce,  "net": ci - ce,  "count": len(cur_recs)},
                 "previous": {"income": pi_, "expense": pe,  "net": pi_ - pe, "count": len(prev_recs)},
                 "change": {
-                    "income":  pct(ci,  pi_),
-                    "expense": pct(ce,  pe),
-                    "net":     pct(ci - ce, pi_ - pe),
-                    "count":   pct(len(cur_recs), len(prev_recs)),
+                    "income":  pct_change(ci,  pi_),
+                    "expense": pct_change(ce,  pe),
+                    "net":     pct_change(ci - ce, pi_ - pe),
+                    "count":   pct_change(len(cur_recs), len(prev_recs)),
                 },
             },
             "breakdown_expense":      sheets.monthly_breakdown(cur_recs,  "expense"),

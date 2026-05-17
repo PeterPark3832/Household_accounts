@@ -2,53 +2,14 @@
 Tests for pure aggregation functions in sheets.py.
 
 These functions accept plain dicts and return plain dicts/floats — no gspread
-calls, no caching, no threading. Imported via a lightweight stub path so the
-Google Sheets client is never initialised.
+calls, no caching, no threading.
+
+conftest.py loads the real sheets module with gspread stubbed, so we just
+import it directly here.
 """
-import sys
-import types
 import pytest
 
-# ── stub gspread before sheets.py is imported ─────────────────────────────────
-# conftest.py already stubs "sheets" itself, but here we want to import the
-# *real* sheets module, so we register the gspread stubs and then force-import.
-
-for _mod in (
-    "gspread",
-    "gspread.exceptions",
-    "google",
-    "google.oauth2",
-    "google.oauth2.service_account",
-    "google.auth",
-    "google.auth.exceptions",
-):
-    if _mod not in sys.modules:
-        sys.modules[_mod] = types.ModuleType(_mod)
-
-# gspread exception classes
-import gspread  # noqa: E402
-gspread_exc = sys.modules["gspread.exceptions"]
-for _exc in ("APIError", "WorksheetNotFound"):
-    if not hasattr(gspread_exc, _exc):
-        setattr(gspread_exc, _exc, type(_exc, (Exception,), {}))
-
-# gspread type stubs referenced at module level in sheets.py
-for _cls in ("Client", "Spreadsheet", "Worksheet"):
-    if not hasattr(gspread, _cls):
-        setattr(gspread, _cls, type(_cls, (), {}))
-
-# google.oauth2.service_account.Credentials
-sa_mod = sys.modules["google.oauth2.service_account"]
-if not hasattr(sa_mod, "Credentials"):
-    sa_mod.Credentials = type("Credentials", (), {})
-
-# Force a fresh import of the real sheets module (bypass the conftest stub)
-import importlib  # noqa: E402
-if "sheets" in sys.modules:
-    # Remove the conftest stub so we load the real file
-    del sys.modules["sheets"]
-
-import sheets as _sheets_mod  # noqa: E402
+import sheets as _sheets_mod
 
 monthly_total     = _sheets_mod.monthly_total
 monthly_breakdown = _sheets_mod.monthly_breakdown

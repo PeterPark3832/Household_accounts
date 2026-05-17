@@ -55,7 +55,7 @@ def _make_telegram_stubs():
     sched.AsyncIOScheduler = MagicMock(name="AsyncIOScheduler")
 
     dotenv = sys.modules["dotenv"]
-    dotenv.load_dotenv = lambda: None
+    dotenv.load_dotenv = lambda *a, **kw: None
 
 
 _make_telegram_stubs()
