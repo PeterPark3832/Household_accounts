@@ -138,6 +138,8 @@ def parse_amount(text: str) -> float | None:
 def match_category(keyword: str) -> tuple[str, str] | None:
     """키워드로 카테고리를 검색합니다. (카테고리명, record_type) 반환."""
     keyword = keyword.strip()
+    if not keyword:
+        return None
     # 완전 일치 우선
     for cat in INCOME_CATEGORIES:
         if cat == keyword:
@@ -767,14 +769,17 @@ async def _send_summary(message, user_id: int, display_name: str, year: int, mon
             ex_lines += f"  {emoji} {cat}: {fmt(amt)}\n"
 
     icon = "📈" if balance >= 0 else "📉"
+    in_lines_display = in_lines or "  (없음)\n"
+    ex_lines_display = ex_lines or "  (없음)\n"
+    separator = "─" * 28
     text = (
         f"📊 *{year}년 {month}월 — {display_name}님 가계부*\n"
-        f"{'─'*28}\n\n"
+        f"{separator}\n\n"
         f"💰 *총 수입* {fmt(total_in)}\n"
-        f"{in_lines or '  (없음)\n'}\n"
+        f"{in_lines_display}\n"
         f"💸 *총 지출* {fmt(total_ex)}\n"
-        f"{ex_lines or '  (없음)\n'}\n"
-        f"{'─'*28}\n"
+        f"{ex_lines_display}\n"
+        f"{separator}\n"
         f"{icon} *순수지*: {fmt(balance)}"
     )
     await message.reply_text(text, parse_mode="Markdown", reply_markup=main_kb())
