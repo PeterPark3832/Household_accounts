@@ -53,7 +53,6 @@ for _mod in (
     "telegram", "telegram.ext",
     "apscheduler", "apscheduler.schedulers", "apscheduler.schedulers.asyncio",
     "dotenv",
-    "matplotlib", "matplotlib.pyplot", "numpy",
 ):
     sys.modules.setdefault(_mod, types.ModuleType(_mod))
 
@@ -89,6 +88,4 @@ if "sheets" in sys.modules:
     del sys.modules["sheets"]
 import sheets  # noqa: F401  real module, needed by test_sheets_pure & test_dashboard
 
-# ── stub charts (matplotlib not needed in tests) ──────────────────────────────
-_charts = types.ModuleType("charts")
-sys.modules["charts"] = _charts
+# charts.py uses real matplotlib (installed); no stub needed.

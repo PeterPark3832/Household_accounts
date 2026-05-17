@@ -195,6 +195,8 @@ def bar_chart_by_member(
     label: str = "지출",
 ) -> bytes:
     """가족 구성원별 지출/수입 막대그래프"""
+    if not members:
+        return None
     fig, ax = plt.subplots(figsize=(max(5, len(members) * 1.3), 4.5), facecolor=DARK_BG)
     ax.set_facecolor(DARK_BG)
     ax.tick_params(colors=TEXT_CLR)

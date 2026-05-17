@@ -23,9 +23,6 @@ def _make_telegram_stubs():
         "apscheduler.schedulers",
         "apscheduler.schedulers.asyncio",
         "dotenv",
-        "matplotlib",
-        "matplotlib.pyplot",
-        "numpy",
     ]:
         if mod_name not in sys.modules:
             sys.modules[mod_name] = types.ModuleType(mod_name)
