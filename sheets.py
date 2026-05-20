@@ -30,6 +30,7 @@ SCOPES = [
 _client: gspread.Client | None = None
 _spreadsheet: gspread.Spreadsheet | None = None
 _spreadsheet_lock = threading.Lock()
+_cache_lock        = threading.Lock()
 
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
 
@@ -66,7 +67,7 @@ def _safe_get_records(ws: gspread.Worksheet) -> list[dict]:
             status = getattr(e, "response", None)
             code   = status.status_code if status else 0
             if code in (429, 500, 503) and attempt < 2:
-                wait = 2 ** (attempt + 1)
+                wait = 2 ** attempt   # 1s, 2s (최대 3초)
                 logger.warning(f"Sheets API {code}, {wait}초 후 재시도 ({attempt+1}/3)…")
                 time.sleep(wait)
             else:
@@ -141,8 +142,9 @@ _USERS_TTL: float = 30.0
 
 def _invalidate_users_cache():
     global _users_cache, _users_cache_ts
-    _users_cache = None
-    _users_cache_ts = 0.0
+    with _cache_lock:
+        _users_cache = None
+        _users_cache_ts = 0.0
 
 
 # ── TTL 캐시 — records (5분, 월별 키) ────────────────────────────
@@ -151,18 +153,21 @@ _RECORDS_TTL: float = 300.0
 
 
 def _get_records_from_cache(year: int, month: int) -> list[dict] | None:
-    entry = _records_cache.get((year, month))
-    if entry and (time.monotonic() - entry[1]) < _RECORDS_TTL:
-        return entry[0]
+    with _cache_lock:
+        entry = _records_cache.get((year, month))
+        if entry and (time.monotonic() - entry[1]) < _RECORDS_TTL:
+            return entry[0]
     return None
 
 
 def _set_records_cache(year: int, month: int, data: list[dict]):
-    _records_cache[(year, month)] = (data, time.monotonic())
+    with _cache_lock:
+        _records_cache[(year, month)] = (data, time.monotonic())
 
 
 def _invalidate_records_cache():
-    _records_cache.clear()
+    with _cache_lock:
+        _records_cache.clear()
 
 
 # ── TTL 캐시 — budgets (2분, 유저×연월 키) ────────────────────────
@@ -171,35 +176,40 @@ _BUDGETS_TTL: float = 120.0
 
 
 def _get_budgets_from_cache(user_id: int, year: int, month: int) -> dict[str, float] | None:
-    entry = _budgets_cache.get((str(user_id), year, month))
-    if entry and (time.monotonic() - entry[1]) < _BUDGETS_TTL:
-        return entry[0]
+    with _cache_lock:
+        entry = _budgets_cache.get((str(user_id), year, month))
+        if entry and (time.monotonic() - entry[1]) < _BUDGETS_TTL:
+            return entry[0]
     return None
 
 
 def _set_budgets_cache(user_id: int, year: int, month: int, data: dict[str, float]):
-    _budgets_cache[(str(user_id), year, month)] = (data, time.monotonic())
+    with _cache_lock:
+        _budgets_cache[(str(user_id), year, month)] = (data, time.monotonic())
 
 
 def _invalidate_budgets_cache(user_id: int | None = None):
-    if user_id is None:
-        _budgets_cache.clear()
-    else:
-        for k in list(_budgets_cache.keys()):
-            if k[0] == str(user_id):
-                del _budgets_cache[k]
+    with _cache_lock:
+        if user_id is None:
+            _budgets_cache.clear()
+        else:
+            for k in list(_budgets_cache.keys()):
+                if k[0] == str(user_id):
+                    del _budgets_cache[k]
 
 
 # ── 유저 관리 ──────────────────────────────────────────────────────
 def get_all_users() -> list[dict]:
     global _users_cache, _users_cache_ts
-    now = time.monotonic()
-    if _users_cache is not None and (now - _users_cache_ts) < _USERS_TTL:
-        return _users_cache
-    ws = get_sheet("users")
-    _users_cache = _safe_get_records(ws)
-    _users_cache_ts = now
-    return _users_cache
+    with _cache_lock:
+        if _users_cache is not None and (time.monotonic() - _users_cache_ts) < _USERS_TTL:
+            return _users_cache
+    # I/O는 락 밖에서 실행
+    rows = _safe_get_records(get_sheet("users"))
+    with _cache_lock:
+        _users_cache = rows
+        _users_cache_ts = time.monotonic()
+    return rows
 
 
 def find_user(user_id: int) -> dict | None:

@@ -138,7 +138,7 @@ async def api_summary(year: int = Query(None), month: int = Query(None)):
         }
     except Exception as e:
         logger.error("api_summary(%d, %d) failed: %s", year, month, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/breakdown", dependencies=[Depends(verify)])
@@ -156,7 +156,7 @@ async def api_breakdown(
         return {"breakdown": breakdown, "type": record_type}
     except Exception as e:
         logger.error("api_breakdown(%d, %d, %s) failed: %s", year, month, record_type, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/trend", dependencies=[Depends(verify)])
@@ -183,21 +183,20 @@ async def api_trend(months: int = Query(6)):
 
     try:
         all_recs = await asyncio.gather(*[safe_fetch(y, m) for y, m in month_keys])
-        result = [
-            {
+        result = []
+        for (y, m), recs in zip(month_keys, all_recs):
+            inc = sheets.monthly_total(recs, "income")
+            exp = sheets.monthly_total(recs, "expense")
+            result.append({
                 "year": y, "month": m,
                 "label": f"{y}.{m:02d}",
-                "income":  sheets.monthly_total(recs, "income"),
-                "expense": sheets.monthly_total(recs, "expense"),
-                "net":     sheets.monthly_total(recs, "income") - sheets.monthly_total(recs, "expense"),
-            }
-            for (y, m), recs in zip(month_keys, all_recs)
-        ]
+                "income": inc, "expense": exp, "net": inc - exp,
+            })
         _trend_cache[cache_key] = result
         return result
     except Exception as e:
         logger.error("api_trend failed: %s", e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/comparison", dependencies=[Depends(verify)])
@@ -230,7 +229,7 @@ async def api_comparison(year: int = Query(None), month: int = Query(None)):
         }
     except Exception as e:
         logger.error("api_comparison(%d, %d) failed: %s", year, month, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/members", dependencies=[Depends(verify)])
@@ -250,7 +249,7 @@ async def api_members(year: int = Query(None), month: int = Query(None)):
         return members
     except Exception as e:
         logger.error("api_members(%d, %d) failed: %s", year, month, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/transactions", dependencies=[Depends(verify)])
@@ -268,7 +267,7 @@ async def api_transactions(
         return records[:limit]
     except Exception as e:
         logger.error("api_transactions(%d, %d) failed: %s", year, month, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/users", dependencies=[Depends(verify)])
@@ -277,7 +276,7 @@ async def api_users():
         return await run_sync(sheets.get_all_users)
     except Exception as e:
         logger.error("api_users failed: %s", e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/budgets", dependencies=[Depends(verify)])
@@ -298,14 +297,16 @@ async def api_budgets(
         if not user_id:
             return []
 
-        budgets = await run_sync(sheets.get_all_budgets_for_month, int(user_id), year, month)
-        records = await run_sync(sheets.get_records_for_month, year, month)
+        budgets, records = await asyncio.gather(
+            run_sync(sheets.get_all_budgets_for_month, int(user_id), year, month),
+            run_sync(sheets.get_records_for_month, year, month),
+        )
         actuals = sheets.monthly_breakdown(records, "expense")
 
         return build_budget_report(budgets, actuals)
     except Exception as e:
         logger.error("api_budgets(%d, %d) failed: %s", year, month, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/dashboard", dependencies=[Depends(verify)])
@@ -380,7 +381,7 @@ async def api_dashboard(year: int = Query(None), month: int = Query(None)):
         return result
     except Exception as e:
         logger.error("api_dashboard(%d, %d) failed: %s", year, month, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.get("/api/annual", dependencies=[Depends(verify)])
@@ -402,21 +403,19 @@ async def api_annual(year: int = Query(None)):
 
     try:
         all_recs = await asyncio.gather(*[safe_fetch(m) for m in range(1, 13)])
-        result = [
-            {
-                "month": m,
-                "label": f"{m}월",
-                "income":  sheets.monthly_total(recs, "income"),
-                "expense": sheets.monthly_total(recs, "expense"),
-                "net":     sheets.monthly_total(recs, "income") - sheets.monthly_total(recs, "expense"),
-            }
-            for m, recs in enumerate(all_recs, 1)
-        ]
+        result = []
+        for m, recs in enumerate(all_recs, 1):
+            inc = sheets.monthly_total(recs, "income")
+            exp = sheets.monthly_total(recs, "expense")
+            result.append({
+                "month": m, "label": f"{m}월",
+                "income": inc, "expense": exp, "net": inc - exp,
+            })
         _annual_cache[year] = result
         return result
     except Exception as e:
         logger.error("api_annual(%d) failed: %s", year, e, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
 @app.post("/api/cache/clear", dependencies=[Depends(verify)])
