@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import base64
 import calendar
 import functools
 import io
@@ -13,6 +14,7 @@ import logging
 import logging.handlers
 import os
 import re
+import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -43,9 +45,12 @@ import charts
 load_dotenv()
 
 # ── 설정 ──────────────────────────────────────────────────────────
-BOT_TOKEN  = os.getenv("BUDGET_BOT_TOKEN")
-ADMIN_ID   = int(os.getenv("ADMIN_USER_ID", "0"))
-KST        = ZoneInfo("Asia/Seoul")
+BOT_TOKEN      = os.getenv("BUDGET_BOT_TOKEN")
+ADMIN_ID       = int(os.getenv("ADMIN_USER_ID", "0"))
+DASHBOARD_URL  = os.getenv("DASHBOARD_URL", "").rstrip("/")
+DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
+DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "")
+KST            = ZoneInfo("Asia/Seoul")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +63,23 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+async def _clear_dashboard_cache() -> None:
+    """기록 후 대시보드 응답 캐시를 무효화합니다 (fire-and-forget)."""
+    if not DASHBOARD_URL or not DASHBOARD_PASS:
+        return
+    url = f"{DASHBOARD_URL}/api/cache/clear"
+    creds = base64.b64encode(f"{DASHBOARD_USER}:{DASHBOARD_PASS}".encode()).decode()
+    try:
+        req = urllib.request.Request(url, method="POST")
+        req.add_header("Authorization", f"Basic {creds}")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=3))
+        logger.info("Dashboard cache cleared")
+    except Exception as e:
+        logger.warning("Dashboard cache clear failed: %s", e)
+
 
 # ── 카테고리 ──────────────────────────────────────────────────────
 INCOME_CATEGORIES = {
@@ -374,6 +396,7 @@ async def cmd_quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memo=memo,
         recorded_at=now,
     )
+    asyncio.create_task(_clear_dashboard_cache())
 
     emoji      = (INCOME_CATEGORIES if rec_type == "income" else EXPENSE_CATEGORIES).get(matched_cat, "")
     type_label = "💰 수입" if rec_type == "income" else "💸 지출"
@@ -695,6 +718,7 @@ async def on_memo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memo=memo,
         recorded_at=now,
     )
+    asyncio.create_task(_clear_dashboard_cache())
 
     emoji      = (INCOME_CATEGORIES if rec_type == "income" else EXPENSE_CATEGORIES).get(category, "")
     type_label = "💰 수입" if rec_type == "income" else "💸 지출"

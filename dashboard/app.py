@@ -207,8 +207,10 @@ async def api_comparison(year: int = Query(None), month: int = Query(None)):
     total = year * 12 + (month - 1) - 1
     py, pm = total // 12, total % 12 + 1
     try:
-        cur_recs  = await run_sync(sheets.get_records_for_month, year, month)
-        prev_recs = await run_sync(sheets.get_records_for_month, py, pm)
+        cur_recs, prev_recs = await asyncio.gather(
+            run_sync(sheets.get_records_for_month, year, month),
+            run_sync(sheets.get_records_for_month, py, pm),
+        )
 
         def summary(recs):
             inc = sheets.monthly_total(recs, "income")

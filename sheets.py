@@ -147,15 +147,18 @@ def _invalidate_users_cache():
         _users_cache_ts = 0.0
 
 
-# ── TTL 캐시 — records (5분, 월별 키) ────────────────────────────
+# ── TTL 캐시 — records (현재월 5분, 과거월 24시간) ───────────────
 _records_cache: dict[tuple[int, int], tuple[list[dict], float]] = {}
 _RECORDS_TTL: float = 300.0
+_RECORDS_TTL_PAST: float = 86400.0
 
 
 def _get_records_from_cache(year: int, month: int) -> list[dict] | None:
+    now = datetime.now(KST)
+    ttl = _RECORDS_TTL if (year == now.year and month == now.month) else _RECORDS_TTL_PAST
     with _cache_lock:
         entry = _records_cache.get((year, month))
-        if entry and (time.monotonic() - entry[1]) < _RECORDS_TTL:
+        if entry and (time.monotonic() - entry[1]) < ttl:
             return entry[0]
     return None
 
@@ -316,18 +319,16 @@ def get_recent_records(user_id: int | None = None, limit: int = 10) -> list[dict
 
 def get_records_for_month(year: int, month: int, user_id: int | None = None) -> list[dict]:
     prefix = f"{year}-{month:02d}"
+    cached = _get_records_from_cache(year, month)
+    if cached is None:
+        ws = get_sheet("records")
+        all_rows = _safe_get_records(ws)
+        month_rows = [r for r in all_rows if str(r["date"]).startswith(prefix)]
+        _set_records_cache(year, month, month_rows)
+        cached = month_rows
     if user_id is not None:
-        cached = _get_records_from_cache(year, month)
-        if cached is None:
-            ws = get_sheet("records")
-            all_rows = _safe_get_records(ws)
-            month_rows = [r for r in all_rows if str(r["date"]).startswith(prefix)]
-            _set_records_cache(year, month, month_rows)
-            cached = month_rows
         return [r for r in cached if str(r["user_id"]) == str(user_id)]
-    ws = get_sheet("records")
-    all_rows = _safe_get_records(ws)
-    return [r for r in all_rows if str(r["date"]).startswith(prefix)]
+    return cached
 
 
 def get_records_for_week(
