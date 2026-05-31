@@ -324,6 +324,13 @@ async def test_transactions_limit_param(monkeypatch):
 @pytest.mark.asyncio
 async def test_clear_cache_returns_ok():
     async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
-        r = await client.post("/api/cache/clear")
+        r = await client.post("/api/cache/clear", headers={"X-Dashboard-Clear": "1"})
     assert r.status_code == 200
     assert r.json()["status"] == "cleared"
+
+
+@pytest.mark.asyncio
+async def test_clear_cache_requires_csrf_header():
+    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+        r = await client.post("/api/cache/clear")
+    assert r.status_code == 400

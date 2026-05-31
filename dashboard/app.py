@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Request, Query, Depends, HTTPException, status
+from fastapi import FastAPI, Request, Query, Depends, HTTPException, Header, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -45,8 +45,10 @@ app = FastAPI(title="가계부 대시보드", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 security = HTTPBasic()
 
-DASH_USER = os.environ.get("DASHBOARD_USER", "admin")
-DASH_PASS = os.environ.get("DASHBOARD_PASS", "change_me_please")
+DASH_USER = os.environ.get("DASHBOARD_USER") or ""
+DASH_PASS = os.environ.get("DASHBOARD_PASS") or ""
+if not DASH_USER or not DASH_PASS:
+    raise RuntimeError("DASHBOARD_USER 와 DASHBOARD_PASS 환경 변수를 반드시 설정하세요.")
 
 
 def build_budget_report(budgets: dict, actuals: dict) -> list:
@@ -145,7 +147,7 @@ async def api_summary(year: int = Query(None), month: int = Query(None)):
 async def api_breakdown(
     year: int = Query(None),
     month: int = Query(None),
-    record_type: str = Query("expense"),
+    record_type: str = Query("expense", pattern="^(income|expense)$"),
 ):
     now = datetime.now(KST)
     year = year or now.year
@@ -160,7 +162,7 @@ async def api_breakdown(
 
 
 @app.get("/api/trend", dependencies=[Depends(verify)])
-async def api_trend(months: int = Query(6)):
+async def api_trend(months: int = Query(6, ge=1, le=24)):
     now = datetime.now(KST)
     cache_key = (now.year, now.month, months)
 
@@ -258,7 +260,7 @@ async def api_members(year: int = Query(None), month: int = Query(None)):
 async def api_transactions(
     year: int = Query(None),
     month: int = Query(None),
-    limit: int = Query(200),
+    limit: int = Query(200, ge=1, le=500),
 ):
     now = datetime.now(KST)
     year = year or now.year
@@ -421,8 +423,11 @@ async def api_annual(year: int = Query(None)):
 
 
 @app.post("/api/cache/clear", dependencies=[Depends(verify)])
-async def clear_cache():
-    """대시보드 캐시 수동 초기화 — 봇에서 새 거래 기록 직후 호출 가능."""
+async def clear_cache(x_clear: str | None = Header(None, alias="X-Dashboard-Clear")):
+    """대시보드 캐시 수동 초기화 — 봇에서 새 거래 기록 직후 호출 가능.
+    CSRF 방어: X-Dashboard-Clear: 1 헤더 필수."""
+    if x_clear != "1":
+        raise HTTPException(status_code=400, detail="X-Dashboard-Clear: 1 헤더가 필요합니다.")
     _dash_cache.clear()
     _annual_cache.clear()
     _trend_cache.clear()

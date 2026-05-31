@@ -553,7 +553,16 @@ function errorCover(id, fn) {
   const e = document.getElementById(id);
   if (!e) return;
   e.classList.remove('hidden');
-  e.innerHTML = `<span class="cover-err-msg">로드 실패</span><button class="retry-btn" onclick="${fn}()">재시도</button>`;
+  e.innerHTML = '';
+  const msg = document.createElement('span');
+  msg.className = 'cover-err-msg';
+  msg.textContent = '로드 실패';
+  const btn = document.createElement('button');
+  btn.className = 'retry-btn';
+  btn.textContent = '재시도';
+  btn.addEventListener('click', () => { if (typeof window[fn] === 'function') window[fn](); });
+  e.appendChild(msg);
+  e.appendChild(btn);
 }
 async function get(url) {
   const r = await fetch(url);
@@ -900,18 +909,25 @@ function renderMembers(data) {
 // ── Budgets ────────────────────────────────────────────────────────────────────
 function renderBudgets(data) {
   const wrap=document.getElementById('budget-wrap');
+  wrap.innerHTML='';
   if(!data.length){ wrap.innerHTML='<div class="empty">예산이 설정되지 않았습니다</div>'; return; }
-  wrap.innerHTML=data.map(b=>{
+  data.forEach(b=>{
     const pct=Math.min(b.percentage,100);
     const cls=b.over_budget?'danger':b.percentage>=80?'warning':'safe';
     const pctLabel=b.budget>0?`${b.percentage.toFixed(0)}%`:'예산 없음';
     const acc=b.over_budget?'expense':b.percentage>=80?'warn':'income';
-    return `<div class="bud-item">
-      <div class="bud-labels"><span>${b.category}</span>
-      <span>${fmt(b.actual)} / ${b.budget>0?fmt(b.budget):'—'} <span style="color:var(--${acc})">(${pctLabel})</span></span></div>
-      <div class="bud-track"><div class="bud-fill ${cls}" style="width:${pct}%"></div></div>
-    </div>`;
-  }).join('');
+    const item=document.createElement('div'); item.className='bud-item';
+    const labels=document.createElement('div'); labels.className='bud-labels';
+    const catSpan=document.createElement('span'); catSpan.textContent=b.category;
+    const amtSpan=document.createElement('span');
+    amtSpan.innerHTML=`${fmt(b.actual)} / ${b.budget>0?fmt(b.budget):'—'} <span style="color:var(--${acc})">(${pctLabel})</span>`;
+    labels.appendChild(catSpan); labels.appendChild(amtSpan);
+    const track=document.createElement('div'); track.className='bud-track';
+    const fill=document.createElement('div'); fill.className=`bud-fill ${cls}`; fill.style.width=`${pct}%`;
+    track.appendChild(fill);
+    item.appendChild(labels); item.appendChild(track);
+    wrap.appendChild(item);
+  });
 }
 
 // ── Annual ─────────────────────────────────────────────────────────────────────
@@ -976,21 +992,39 @@ function renderTx() {
   document.getElementById('tx-count-label').textContent = `총 ${data.length}건`;
   const topAmt = data.filter(t=>t.type==='expense').reduce((m,t)=>Math.max(m,parseFloat(t.amount)),0);
   const tbody  = document.getElementById('tx-body');
+  tbody.innerHTML='';
   if(!data.length){ tbody.innerHTML='<tr><td colspan="6" class="empty">거래 내역이 없습니다</td></tr>'; return; }
-  tbody.innerHTML = data.map(t=>{
+  const frag=document.createDocumentFragment();
+  data.forEach(t=>{
     const inc   = t.type==='income';
     const color = inc?'var(--income)':'var(--expense)';
     const sign  = inc?'+':'−';
     const isTop = !inc && parseFloat(t.amount)===topAmt && topAmt>0;
-    return `<tr class="${isTop?'top-row':''}">
-      <td style="color:var(--muted);white-space:nowrap;">${fmtDate(t.date)}</td>
-      <td class="tx-col-name">${t.display_name||'—'}</td>
-      <td><span class="badge-${t.type}">${inc?'수입':'지출'}</span></td>
-      <td style="white-space:nowrap;">${t.category||'—'}</td>
-      <td class="text-end" style="color:${color};font-weight:600;white-space:nowrap;">${sign}${fmt(t.amount)}${isTop?' 🔺':''}</td>
-      <td class="tx-col-memo" style="color:var(--muted);">${t.memo||''}</td>
-    </tr>`;
-  }).join('');
+    const tr=document.createElement('tr');
+    if(isTop) tr.className='top-row';
+    const cells=[
+      [fmtDate(t.date), 'color:var(--muted);white-space:nowrap;', false],
+      [t.display_name||'—', 'tx-col-name', true],
+      [null, '', false],  // badge — safe static HTML
+      [t.category||'—', 'white-space:nowrap;', false],
+      [null, '', false],  // amount — computed safe value
+      [t.memo||'', 'tx-col-memo color:var(--muted);', false],
+    ];
+    // date
+    const tdDate=document.createElement('td'); tdDate.style.cssText='color:var(--muted);white-space:nowrap;'; tdDate.textContent=fmtDate(t.date); tr.appendChild(tdDate);
+    // name
+    const tdName=document.createElement('td'); tdName.className='tx-col-name'; tdName.textContent=t.display_name||'—'; tr.appendChild(tdName);
+    // type badge (static string — safe)
+    const tdType=document.createElement('td'); tdType.innerHTML=`<span class="badge-${inc?'income':'expense'}">${inc?'수입':'지출'}</span>`; tr.appendChild(tdType);
+    // category
+    const tdCat=document.createElement('td'); tdCat.style.whiteSpace='nowrap'; tdCat.textContent=t.category||'—'; tr.appendChild(tdCat);
+    // amount (numeric — safe)
+    const tdAmt=document.createElement('td'); tdAmt.className='text-end'; tdAmt.style.cssText=`color:${color};font-weight:600;white-space:nowrap;`; tdAmt.textContent=`${sign}${fmt(t.amount)}${isTop?' 🔺':''}`; tr.appendChild(tdAmt);
+    // memo
+    const tdMemo=document.createElement('td'); tdMemo.className='tx-col-memo'; tdMemo.style.color='var(--muted)'; tdMemo.textContent=t.memo||''; tr.appendChild(tdMemo);
+    frag.appendChild(tr);
+  });
+  tbody.appendChild(frag);
 }
 function filterTx(type,btn){
   txFilter=type;

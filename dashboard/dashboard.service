@@ -5,13 +5,27 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/Household_accounts/dashboard
-EnvironmentFile=/root/Household_accounts/.env
-ExecStart=/root/Household_accounts/dashboard/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080
+# 보안: root 대신 전용 사용자로 실행
+# 설정 방법: sudo useradd -r -s /bin/false budget
+User=budget
+Group=budget
+WorkingDirectory=/home/budget/household/dashboard
+EnvironmentFile=/home/budget/household/.env
+ExecStart=/home/budget/household/dashboard/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=10
-MemoryLimit=256M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=budget_dashboard
+
+# 보안 hardening (budget_bot.service와 동일 수준)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/budget/household
+
+# 리소스 제한
+MemoryMax=256M
 CPUQuota=30%
 
 [Install]

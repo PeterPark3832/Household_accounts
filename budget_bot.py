@@ -8,6 +8,7 @@
 import asyncio
 import base64
 import calendar
+import csv
 import functools
 import io
 import logging
@@ -177,6 +178,32 @@ def match_category(keyword: str) -> tuple[str, str] | None:
         if keyword in cat or cat in keyword:
             return cat, "expense"
     return None
+
+
+def _budget_bar(pct: float) -> str:
+    """예산 사용률에 따른 색상 블록 이모지 반환."""
+    if pct >= 100:
+        return "🟥"
+    if pct >= 80:
+        return "🟨"
+    return "🟩"
+
+
+def _build_csv_bytes(records: list[dict]) -> bytes:
+    """거래 내역 리스트를 UTF-8 BOM CSV 바이트로 변환합니다."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["번호", "유형", "카테고리", "금액", "메모", "날짜"])
+    for r in records:
+        writer.writerow([
+            r["id"],
+            "수입" if r["type"] == "income" else "지출",
+            r["category"],
+            int(float(r["amount"])),
+            r.get("memo", ""),
+            str(r["date"]),
+        ])
+    return output.getvalue().encode("utf-8-sig")
 
 
 def prev_month(year: int, month: int) -> tuple[int, int]:
@@ -490,7 +517,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for cat, budget in budgets.items():
         spent = ex_break.get(cat, 0)
         pct   = spent / budget * 100 if budget > 0 else 0
-        bar   = "🟥" if pct >= 100 else ("🟨" if pct >= 80 else "🟩")
+        bar   = _budget_bar(pct)
         budget_lines += f"  {bar} {cat}: {pct:.0f}%\n"
 
     max_emoji = EXPENSE_CATEGORIES.get(max_r["category"], "💸")
@@ -633,7 +660,7 @@ async def cmd_budgets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji  = EXPENSE_CATEGORIES.get(cat, "💸")
         spent  = ex_break.get(cat, 0)
         pct    = (spent / budget * 100) if budget > 0 else 0
-        bar    = "🟥" if pct >= 100 else ("🟨" if pct >= 80 else "🟩")
+        bar    = _budget_bar(pct)
         remain = budget - spent
         remain_str = f"남은 {fmt(remain)}" if remain >= 0 else f"초과 {fmt(-remain)}"
         lines += f"{bar} {emoji} *{cat}*\n  {fmt(spent)} / {fmt(budget)} ({pct:.0f}%) — {remain_str}\n\n"
@@ -787,7 +814,7 @@ async def _send_summary(message, user_id: int, display_name: str, year: int, mon
         budget = budgets.get(cat)
         if budget:
             pct = amt / budget * 100
-            bar = "🟥" if pct >= 100 else ("🟨" if pct >= 80 else "🟩")
+            bar = _budget_bar(pct)
             ex_lines += f"  {emoji} {cat}: {fmt(amt)} / {fmt(budget)} {bar}\n"
         else:
             ex_lines += f"  {emoji} {cat}: {fmt(amt)}\n"
@@ -1104,24 +1131,10 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📤 기록이 없습니다.", reply_markup=main_kb())
         return
 
-    output = _io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["번호", "유형", "카테고리", "금액", "메모", "날짜"])
-    for r in records:
-        writer.writerow([
-            r["id"],
-            "수입" if r["type"] == "income" else "지출",
-            r["category"],
-            int(float(r["amount"])),
-            r.get("memo", ""),
-            str(r["date"]),
-        ])
-    output.seek(0)
-
     now      = now_kst()
     filename = f"가계부_전체_{user['display_name']}_{now.strftime('%Y%m%d')}.csv"
     await update.message.reply_document(
-        document=output.getvalue().encode("utf-8-sig"),
+        document=_build_csv_bytes(records),
         filename=filename,
         caption=f"📤 전체 기간 가계부 — {user['display_name']} ({len(records)}건)",
         reply_markup=main_kb(),
@@ -1189,22 +1202,9 @@ async def export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not records:
         await update.message.reply_text("📤 이번달 기록이 없습니다.")
         return
-    output = _io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["번호", "유형", "카테고리", "금액", "메모", "날짜"])
-    for r in records:
-        writer.writerow([
-            r["id"],
-            "수입" if r["type"] == "income" else "지출",
-            r["category"],
-            int(float(r["amount"])),
-            r.get("memo", ""),
-            str(r["date"]),
-        ])
-    output.seek(0)
     filename = f"가계부_{now.year}{now.month:02d}_{user['display_name']}.csv"
     await update.message.reply_document(
-        document=output.getvalue().encode("utf-8-sig"),
+        document=_build_csv_bytes(records),
         filename=filename,
         caption=f"📤 {now.year}년 {now.month}월 가계부 — {user['display_name']}",
     )
