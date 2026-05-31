@@ -65,7 +65,7 @@ def _safe_get_records(ws: gspread.Worksheet) -> list[dict]:
             return ws.get_all_records()
         except APIError as e:
             status = getattr(e, "response", None)
-            code   = status.status_code if status else 0
+            code   = getattr(status, "status_code", 0)
             if code in (429, 500, 503) and attempt < 2:
                 wait = 2 ** attempt   # 1s, 2s (최대 3초)
                 logger.warning(f"Sheets API {code}, {wait}초 후 재시도 ({attempt+1}/3)…")
@@ -240,26 +240,23 @@ def is_approved(user_id: int) -> bool:
     return u is not None and u.get("role") in ("admin", "member")
 
 
-def set_user_role(user_id: int, role: str) -> bool:
+def _update_user_field(user_id: int, field: str, value: str) -> bool:
     ws = get_sheet("users")
     records = _safe_get_records(ws)
     for i, row in enumerate(records, start=2):
         if str(row["user_id"]) == str(user_id):
-            ws.update_cell(i, USERS_HEADERS.index("role") + 1, role)
+            ws.update_cell(i, USERS_HEADERS.index(field) + 1, value)
             _invalidate_users_cache()
             return True
     return False
+
+
+def set_user_role(user_id: int, role: str) -> bool:
+    return _update_user_field(user_id, "role", role)
 
 
 def update_display_name(user_id: int, name: str) -> bool:
-    ws = get_sheet("users")
-    records = _safe_get_records(ws)
-    for i, row in enumerate(records, start=2):
-        if str(row["user_id"]) == str(user_id):
-            ws.update_cell(i, USERS_HEADERS.index("display_name") + 1, name)
-            _invalidate_users_cache()
-            return True
-    return False
+    return _update_user_field(user_id, "display_name", name)
 
 
 # ── 기록 CRUD ──────────────────────────────────────────────────────
@@ -323,9 +320,8 @@ def get_records_for_month(year: int, month: int, user_id: int | None = None) -> 
     if cached is None:
         ws = get_sheet("records")
         all_rows = _safe_get_records(ws)
-        month_rows = [r for r in all_rows if str(r["date"]).startswith(prefix)]
-        _set_records_cache(year, month, month_rows)
-        cached = month_rows
+        cached = [r for r in all_rows if str(r["date"]).startswith(prefix)]
+        _set_records_cache(year, month, cached)
     if user_id is not None:
         return [r for r in cached if str(r["user_id"]) == str(user_id)]
     return cached

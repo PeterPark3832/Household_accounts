@@ -67,7 +67,22 @@ def _buf_from_fig(fig) -> bytes:
     return result
 
 
-def pie_chart(title: str, data: dict[str, float], unit: str = "원") -> bytes:
+def _setup_dark_ax(ax) -> None:
+    """모든 차트에 공통으로 적용되는 다크 테마 축 설정."""
+    ax.set_facecolor(DARK_BG)
+    ax.tick_params(colors=TEXT_CLR)
+    ax.spines[:].set_color(GRID_CLR)
+    ax.yaxis.grid(True, color=GRID_CLR, linewidth=0.6, linestyle="--")
+    ax.set_axisbelow(True)
+
+
+def _apply_currency_formatter(ax) -> None:
+    """y축을 한국 원화 단위(천 단위 쉼표)로 포맷."""
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax.tick_params(axis="y", colors=TEXT_CLR)
+
+
+def pie_chart(title: str, data: dict[str, float], unit: str = "원") -> bytes | None:
     """카테고리별 지출/수입 파이차트"""
     if not data:
         return None
@@ -75,6 +90,8 @@ def pie_chart(title: str, data: dict[str, float], unit: str = "원") -> bytes:
     labels = list(data.keys())
     values = list(data.values())
     total  = sum(values)
+    if total <= 0:
+        return None
 
     fig, ax = plt.subplots(figsize=(7, 5.5), facecolor=DARK_BG)
     ax.set_facecolor(DARK_BG)
@@ -92,7 +109,6 @@ def pie_chart(title: str, data: dict[str, float], unit: str = "원") -> bytes:
         t.set_fontsize(8)
         t.set_color(TEXT_CLR)
 
-    # 범례
     legend_labels = [f"{l}  {v:,.0f}{unit}" for l, v in zip(labels, values)]
     ax.legend(
         wedges, legend_labels,
@@ -111,7 +127,7 @@ def bar_chart_budget(
     categories: list[str],
     actual: list[float],
     budget: list[float],
-) -> bytes:
+) -> bytes | None:
     """예산 대비 실지출 막대그래프"""
     if not categories:
         return None
@@ -120,31 +136,25 @@ def bar_chart_budget(
     w = 0.38
 
     fig, ax = plt.subplots(figsize=(max(7, len(categories) * 1.1), 5), facecolor=DARK_BG)
-    ax.set_facecolor(DARK_BG)
-    ax.tick_params(colors=TEXT_CLR)
-    ax.spines[:].set_color(GRID_CLR)
-    ax.yaxis.grid(True, color=GRID_CLR, linewidth=0.6, linestyle="--")
-    ax.set_axisbelow(True)
+    _setup_dark_ax(ax)
 
     bars_actual = ax.bar(x - w/2, actual, w, label="실지출", color="#4C9BE8", alpha=0.9, zorder=3)
-    bars_budget = ax.bar(x + w/2, budget, w, label="예산",   color="#62BB84", alpha=0.75, zorder=3)
+    ax.bar(x + w/2, budget, w, label="예산", color="#62BB84", alpha=0.75, zorder=3)
 
-    # 초과 표시
     for i, (a, b) in enumerate(zip(actual, budget)):
         if a > b:
             ax.bar(x[i] - w/2, a - b, w, bottom=b, color="#E87777", alpha=0.9, zorder=4, label="_over")
 
-    # 금액 레이블
+    max_actual = max(actual) if actual else 0
     for bar in bars_actual:
         h = bar.get_height()
         if h > 0:
-            ax.text(bar.get_x() + bar.get_width()/2, h + max(actual)*0.01,
+            ax.text(bar.get_x() + bar.get_width()/2, h + max_actual * 0.01,
                     f"{int(h):,}", ha="center", va="bottom", fontsize=7.5, color=TEXT_CLR)
 
     ax.set_xticks(x)
     ax.set_xticklabels(categories, fontsize=9, color=TEXT_CLR)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
-    ax.tick_params(axis="y", colors=TEXT_CLR)
+    _apply_currency_formatter(ax)
     ax.set_title(title, color=TEXT_CLR, fontsize=12, pad=12)
     ax.legend(fontsize=9, frameon=False, labelcolor=TEXT_CLR)
 
@@ -157,29 +167,23 @@ def bar_chart_monthly_trend(
     months: list[str],
     incomes: list[float],
     expenses: list[float],
-) -> bytes:
+) -> bytes | None:
     """월별 수입/지출 트렌드 막대그래프"""
     x = np.arange(len(months))
     w = 0.38
 
     fig, ax = plt.subplots(figsize=(max(6, len(months) * 1.2), 5), facecolor=DARK_BG)
-    ax.set_facecolor(DARK_BG)
-    ax.tick_params(colors=TEXT_CLR)
-    ax.spines[:].set_color(GRID_CLR)
-    ax.yaxis.grid(True, color=GRID_CLR, linewidth=0.6, linestyle="--")
-    ax.set_axisbelow(True)
+    _setup_dark_ax(ax)
 
     ax.bar(x - w/2, incomes,  w, label="수입", color="#62BB84", alpha=0.9, zorder=3)
     ax.bar(x + w/2, expenses, w, label="지출", color="#F4845F", alpha=0.9, zorder=3)
 
-    # 순수지 선
     net = [i - e for i, e in zip(incomes, expenses)]
     ax.plot(x, net, color="#F7C86F", marker="o", linewidth=1.8, label="순수지", zorder=5)
 
     ax.set_xticks(x)
     ax.set_xticklabels(months, fontsize=9, color=TEXT_CLR)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
-    ax.tick_params(axis="y", colors=TEXT_CLR)
+    _apply_currency_formatter(ax)
     ax.axhline(0, color=GRID_CLR, linewidth=1)
     ax.set_title(title, color=TEXT_CLR, fontsize=12, pad=12)
     ax.legend(fontsize=9, frameon=False, labelcolor=TEXT_CLR)
@@ -193,29 +197,26 @@ def bar_chart_by_member(
     members: list[str],
     values: list[float],
     label: str = "지출",
-) -> bytes:
+) -> bytes | None:
     """가족 구성원별 지출/수입 막대그래프"""
     if not members:
         return None
+
     fig, ax = plt.subplots(figsize=(max(5, len(members) * 1.3), 4.5), facecolor=DARK_BG)
-    ax.set_facecolor(DARK_BG)
-    ax.tick_params(colors=TEXT_CLR)
-    ax.spines[:].set_color(GRID_CLR)
-    ax.yaxis.grid(True, color=GRID_CLR, linewidth=0.6, linestyle="--")
-    ax.set_axisbelow(True)
+    _setup_dark_ax(ax)
 
     colors = PALETTE[:len(members)]
     bars = ax.bar(members, values, color=colors, alpha=0.9, zorder=3)
 
+    max_val = max(values) if values else 0
     for bar in bars:
         h = bar.get_height()
         if h > 0:
-            ax.text(bar.get_x() + bar.get_width()/2, h + max(values)*0.01,
+            ax.text(bar.get_x() + bar.get_width()/2, h + max_val * 0.01,
                     f"{int(h):,}원", ha="center", va="bottom", fontsize=9, color=TEXT_CLR)
 
     ax.set_xticklabels(members, fontsize=10, color=TEXT_CLR)
-    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
-    ax.tick_params(axis="y", colors=TEXT_CLR)
+    _apply_currency_formatter(ax)
     ax.set_title(title, color=TEXT_CLR, fontsize=12, pad=12)
     ax.set_ylabel(label, color=TEXT_CLR, fontsize=9)
 
