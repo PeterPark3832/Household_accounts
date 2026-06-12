@@ -1,5 +1,6 @@
-import os
+﻿import os
 import sys
+import time as _time
 import secrets
 import asyncio
 import logging
@@ -7,10 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Request, Query, Depends, HTTPException, Header, status
+from fastapi import FastAPI, Request, Query, Depends, HTTPException, Header
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from cachetools import TTLCache
 import uvicorn
 from dotenv import load_dotenv
@@ -23,7 +23,7 @@ sys.path.insert(0, PARENT_DIR)
 
 import sheets  # noqa: E402  (imported after path setup)
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# -- Logging -------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -32,31 +32,44 @@ logger = logging.getLogger("dashboard")
 
 KST = ZoneInfo("Asia/Seoul")
 
-# Sheets API는 I/O 바운드 → 워커를 넉넉히 (기본값 4 → 16)
+# Sheets API I/O bound => more workers
 executor = ThreadPoolExecutor(max_workers=16)
 
-# ── 응답 레벨 TTL 캐시 ────────────────────────────────────────────────────────
-# sheets.py 내부 records 캐시(5분)보다 짧게 설정해 신선도 보장
-_dash_cache   = TTLCache(maxsize=36, ttl=120)   # 월별 대시보드  2분
-_annual_cache = TTLCache(maxsize=10, ttl=300)   # 연간 요약      5분
-_trend_cache  = TTLCache(maxsize=12, ttl=120)   # 트렌드        2분
+# -- TTL caches ----------------------------------------------------------------
+_dash_cache   = TTLCache(maxsize=36, ttl=120)
+_annual_cache = TTLCache(maxsize=10, ttl=300)
+_trend_cache  = TTLCache(maxsize=12, ttl=120)
 
 app = FastAPI(title="가계부 대시보드", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
-security = HTTPBasic()
 
-DASH_USER = os.environ.get("DASHBOARD_USER") or ""
 DASH_PASS = os.environ.get("DASHBOARD_PASS") or ""
-if not DASH_USER or not DASH_PASS:
-    raise RuntimeError("DASHBOARD_USER 와 DASHBOARD_PASS 환경 변수를 반드시 설정하세요.")
+if not DASH_PASS:
+    raise RuntimeError("DASHBOARD_PASS 환경 변수를 반드시 설정하세요.")
+
+# -- Token auth ----------------------------------------------------------------
+_tokens: dict[str, float] = {}
+
+def _new_token() -> str:
+    tok = secrets.token_hex(32)
+    _tokens[tok] = _time.time() + 86400  # 24 h
+    return tok
+
+def _check_token(tok: str) -> bool:
+    exp = _tokens.get(tok)
+    if not exp or _time.time() > exp:
+        _tokens.pop(tok, None)
+        return False
+    return True
+
+def verify_token(authorization: str = Header(default="")):
+    tok = authorization.removeprefix("Bearer ").strip()
+    if not _check_token(tok):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+# -- Helpers -------------------------------------------------------------------
 def build_budget_report(budgets: dict, actuals: dict) -> list:
-    """예산 vs 실지출 비교 리스트를 반환합니다 (실지출 내림차순 정렬).
-
-    budgets: {category: budget_amount}
-    actuals: {category: actual_amount}  (monthly_breakdown 결과)
-    """
     result: list[dict] = []
     seen: set[str] = set()
     for category, budget_amount in budgets.items():
@@ -82,21 +95,9 @@ def build_budget_report(budgets: dict, actuals: dict) -> list:
 
 
 def pct_change(current: float, previous: float) -> float | None:
-    """이전 값 대비 변화율(%)을 반환합니다. 이전 값이 0이면 None."""
     if previous == 0:
         return None
     return round((current - previous) / abs(previous) * 100, 1)
-
-
-def verify(credentials: HTTPBasicCredentials = Depends(security)):
-    ok_user = secrets.compare_digest(credentials.username.encode(), DASH_USER.encode())
-    ok_pass = secrets.compare_digest(credentials.password.encode(), DASH_PASS.encode())
-    if not (ok_user and ok_pass):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Basic"},
-        )
 
 
 async def run_sync(fn, *args):
@@ -104,9 +105,9 @@ async def run_sync(fn, *args):
     return await loop.run_in_executor(executor, lambda: fn(*args))
 
 
-# ── Pages ─────────────────────────────────────────────────────────────────────
+# -- Pages ---------------------------------------------------------------------
 
-@app.get("/", response_class=HTMLResponse, dependencies=[Depends(verify)])
+@app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     now = datetime.now(KST)
     return templates.TemplateResponse("index.html", {
@@ -121,9 +122,17 @@ async def health():
     return {"status": "ok"}
 
 
-# ── API ───────────────────────────────────────────────────────────────────────
+@app.post("/api/auth")
+async def api_auth(req: Request):
+    body = await req.json()
+    if secrets.compare_digest(body.get("password", ""), DASH_PASS):
+        return {"token": _new_token()}
+    raise HTTPException(status_code=401, detail="Invalid password")
 
-@app.get("/api/summary", dependencies=[Depends(verify)])
+
+# -- API -----------------------------------------------------------------------
+
+@app.get("/api/summary", dependencies=[Depends(verify_token)])
 async def api_summary(year: int = Query(None), month: int = Query(None)):
     now = datetime.now(KST)
     year = year or now.year
@@ -143,7 +152,7 @@ async def api_summary(year: int = Query(None), month: int = Query(None)):
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/breakdown", dependencies=[Depends(verify)])
+@app.get("/api/breakdown", dependencies=[Depends(verify_token)])
 async def api_breakdown(
     year: int = Query(None),
     month: int = Query(None),
@@ -161,7 +170,7 @@ async def api_breakdown(
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/trend", dependencies=[Depends(verify)])
+@app.get("/api/trend", dependencies=[Depends(verify_token)])
 async def api_trend(months: int = Query(6, ge=1, le=24)):
     now = datetime.now(KST)
     cache_key = (now.year, now.month, months)
@@ -169,7 +178,7 @@ async def api_trend(months: int = Query(6, ge=1, le=24)):
     if cache_key in _trend_cache:
         logger.info("trend cache HIT  %d-%02d (%dm)", now.year, now.month, months)
         return _trend_cache[cache_key]
-    logger.info("trend cache MISS %d-%02d — fetching %d months", now.year, now.month, months)
+    logger.info("trend cache MISS %d-%02d -- fetching %d months", now.year, now.month, months)
 
     month_keys = []
     for i in range(months - 1, -1, -1):
@@ -201,7 +210,7 @@ async def api_trend(months: int = Query(6, ge=1, le=24)):
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/comparison", dependencies=[Depends(verify)])
+@app.get("/api/comparison", dependencies=[Depends(verify_token)])
 async def api_comparison(year: int = Query(None), month: int = Query(None)):
     now = datetime.now(KST)
     year = year or now.year
@@ -236,7 +245,7 @@ async def api_comparison(year: int = Query(None), month: int = Query(None)):
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/members", dependencies=[Depends(verify)])
+@app.get("/api/members", dependencies=[Depends(verify_token)])
 async def api_members(year: int = Query(None), month: int = Query(None)):
     now = datetime.now(KST)
     year = year or now.year
@@ -256,7 +265,7 @@ async def api_members(year: int = Query(None), month: int = Query(None)):
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/transactions", dependencies=[Depends(verify)])
+@app.get("/api/transactions", dependencies=[Depends(verify_token)])
 async def api_transactions(
     year: int = Query(None),
     month: int = Query(None),
@@ -274,7 +283,7 @@ async def api_transactions(
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/users", dependencies=[Depends(verify)])
+@app.get("/api/users", dependencies=[Depends(verify_token)])
 async def api_users():
     try:
         return await run_sync(sheets.get_all_users)
@@ -283,7 +292,7 @@ async def api_users():
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/budgets", dependencies=[Depends(verify)])
+@app.get("/api/budgets", dependencies=[Depends(verify_token)])
 async def api_budgets(
     user_id: str = Query(None),
     year: int = Query(None),
@@ -313,9 +322,8 @@ async def api_budgets(
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/dashboard", dependencies=[Depends(verify)])
+@app.get("/api/dashboard", dependencies=[Depends(verify_token)])
 async def api_dashboard(year: int = Query(None), month: int = Query(None)):
-    """현재 월 핵심 데이터 — 병렬 fetch + TTL 캐시."""
     now = datetime.now(KST)
     year  = year  or now.year
     month = month or now.month
@@ -324,13 +332,12 @@ async def api_dashboard(year: int = Query(None), month: int = Query(None)):
     if cache_key in _dash_cache:
         logger.info("dashboard cache HIT  %d-%02d", year, month)
         return _dash_cache[cache_key]
-    logger.info("dashboard cache MISS %d-%02d — fetching Sheets", year, month)
+    logger.info("dashboard cache MISS %d-%02d -- fetching Sheets", year, month)
 
     total_prev = year * 12 + (month - 1) - 1
     py, pm = total_prev // 12, total_prev % 12 + 1
 
     try:
-        # ── 3개 병렬 fetch ─────────────────────────────────────
         users, cur_recs, prev_recs = await asyncio.gather(
             run_sync(sheets.get_all_users),
             run_sync(sheets.get_records_for_month, year, month),
@@ -388,7 +395,7 @@ async def api_dashboard(year: int = Query(None), month: int = Query(None)):
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.get("/api/annual", dependencies=[Depends(verify)])
+@app.get("/api/annual", dependencies=[Depends(verify_token)])
 async def api_annual(year: int = Query(None)):
     now = datetime.now(KST)
     year = year or now.year
@@ -396,7 +403,7 @@ async def api_annual(year: int = Query(None)):
     if year in _annual_cache:
         logger.info("annual cache HIT  %d", year)
         return _annual_cache[year]
-    logger.info("annual cache MISS %d — fetching 12 months", year)
+    logger.info("annual cache MISS %d -- fetching 12 months", year)
 
     async def safe_fetch(m):
         try:
@@ -422,10 +429,8 @@ async def api_annual(year: int = Query(None)):
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
 
-@app.post("/api/cache/clear", dependencies=[Depends(verify)])
+@app.post("/api/cache/clear", dependencies=[Depends(verify_token)])
 async def clear_cache(x_clear: str | None = Header(None, alias="X-Dashboard-Clear")):
-    """대시보드 캐시 수동 초기화 — 봇에서 새 거래 기록 직후 호출 가능.
-    CSRF 방어: X-Dashboard-Clear: 1 헤더 필수."""
     if x_clear != "1":
         raise HTTPException(status_code=400, detail="X-Dashboard-Clear: 1 헤더가 필요합니다.")
     _dash_cache.clear()

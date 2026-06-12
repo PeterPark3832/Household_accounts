@@ -143,6 +143,15 @@ button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:t
 }
 .sb-name{font-size:.8rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .sb-role{font-size:.68rem;color:var(--muted);}
+.logout-btn{
+  display:flex;align-items:center;gap:8px;
+  width:100%;margin-top:6px;padding:7px 8px;border-radius:8px;
+  color:var(--muted);font-size:.78rem;font-weight:500;background:none;border:none;cursor:pointer;
+  transition:background .15s,color .15s;font-family:inherit;
+}
+.logout-btn:hover{background:rgba(255,82,82,.08);color:var(--expense);}
+.sidebar.collapsed .logout-btn .nl{display:none;}
+.sidebar.collapsed .logout-btn{justify-content:center;}
 
 /* Sidebar — icon-only (tablet collapsed) */
 .sidebar.collapsed .logo-text,
@@ -436,9 +445,61 @@ button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:t
 }
 
 @media(hover:none){.kpi:hover{transform:none;}}
+
+/* ── Login Overlay ── */
+#login-overlay{
+  position:fixed;inset:0;z-index:9999;
+  background:linear-gradient(135deg,#E0F5F2 0%,#F2F5F3 60%,#E8F5E9 100%);
+  display:flex;align-items:center;justify-content:center;
+}
+.login-box{
+  background:#fff;border:1px solid var(--border);border-radius:20px;
+  padding:48px 40px;width:360px;max-width:calc(100vw - 32px);text-align:center;
+  box-shadow:0 8px 40px rgba(0,191,165,.14),0 2px 8px rgba(0,0,0,.06);
+}
+.login-logo-icon{
+  width:68px;height:68px;background:var(--accent-lt);border-radius:18px;
+  display:flex;align-items:center;justify-content:center;
+  margin:0 auto 16px;font-size:30px;color:var(--accent);
+}
+.login-box h1{font-size:22px;font-weight:700;color:var(--text);margin-bottom:6px;}
+.login-box>p{font-size:13px;color:var(--muted);margin-bottom:28px;}
+.login-box input[type=password]{
+  width:100%;border:1.5px solid var(--border);border-radius:10px;
+  padding:13px 16px;font-size:15px;color:var(--text);background:var(--bg);
+  margin-bottom:10px;transition:border-color .2s,box-shadow .2s;font-family:inherit;
+}
+.login-box input[type=password]:focus{
+  outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,191,165,.15);
+}
+.login-submit{
+  width:100%;background:var(--accent);color:#fff;padding:13px;
+  border-radius:10px;font-size:15px;font-weight:600;border:none;cursor:pointer;
+  transition:opacity .15s,transform .1s;font-family:inherit;
+}
+.login-submit:hover{opacity:.88;}
+.login-submit:active{transform:scale(.98);}
+.login-err{color:var(--expense);font-size:12px;margin-top:8px;min-height:18px;}
+#app{display:none;}
+
 </style>
 </head>
 <body>
+<!-- Login Overlay -->
+<div id="login-overlay">
+  <div class="login-box">
+    <div class="login-logo-icon"><i class="fas fa-wallet"></i></div>
+    <h1>가계부 허브</h1>
+    <p>비밀번호를 입력해주세요</p>
+    <input type="password" id="pw-input" placeholder="비밀번호"
+           onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="login-submit" onclick="doLogin()">로그인</button>
+    <div class="login-err" id="login-err"></div>
+  </div>
+</div>
+
+<!-- App (hidden until authenticated) -->
+<div id="app">
 
 <!-- Sidebar overlay -->
 <div class="sb-overlay" id="sb-overlay" onclick="closeMobileSidebar()"></div>
@@ -483,6 +544,10 @@ button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:t
         <div class="sb-role">가족 재정 관리</div>
       </div>
     </div>
+    <button class="logout-btn" onclick="logout()" title="로그아웃">
+      <i class="fas fa-right-from-bracket"></i>
+      <span class="nl">로그아웃</span>
+    </button>
   </div>
 </aside>
 
@@ -736,6 +801,7 @@ button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:t
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
 let CY = {{ current_year }}, CM = {{ current_month }};
+let TOKEN = localStorage.getItem('hh_token') || '';
 let annualYear = {{ current_year }};
 let allTx = [], txFilter = 'all', txSearch = '', txDayFilter = null;
 let pieMode = 'expense';
@@ -814,9 +880,50 @@ function errorCover(id, fn) {
   e.appendChild(msg); e.appendChild(btn);
 }
 async function get(url) {
-  const r = await fetch(url);
+  const r = await fetch(url, {headers: {'Authorization': 'Bearer ' + TOKEN}});
+  if (r.status === 401) { logout(); throw new Error('Unauthorized'); }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
+}
+
+async function doLogin() {
+  const pw  = document.getElementById('pw-input').value;
+  const err = document.getElementById('login-err');
+  err.textContent = '';
+  if (!pw) { err.textContent = '비밀번호를 입력해주세요.'; return; }
+  try {
+    const r = await fetch('/api/auth', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw})
+    });
+    if (r.ok) {
+      TOKEN = (await r.json()).token;
+      localStorage.setItem('hh_token', TOKEN);
+      document.getElementById('login-overlay').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      annualYear = CY;
+      updateAnnualLabel();
+      loadAll();
+      loadAnnual();
+      startAutoRefresh();
+    } else {
+      err.textContent = '비밀번호가 올바르지 않습니다.';
+      document.getElementById('pw-input').value = '';
+      document.getElementById('pw-input').focus();
+    }
+  } catch(e) {
+    err.textContent = '서버 연결에 실패했습니다.';
+  }
+}
+
+function logout() {
+  localStorage.removeItem('hh_token');
+  TOKEN = '';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-overlay').style.display = 'flex';
+  document.getElementById('pw-input').value = '';
+  document.getElementById('login-err').textContent = '';
 }
 
 // ── Month nav ──────────────────────────────────────────────────────────────────
@@ -1219,12 +1326,18 @@ window.addEventListener('resize',()=>{
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',()=>{
-  annualYear=CY;
-  updateAnnualLabel();
-  loadAll();
-  loadAnnual();
-  startAutoRefresh();
+  if (TOKEN) {
+    document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    annualYear = CY;
+    updateAnnualLabel();
+    loadAll();
+    loadAnnual();
+    startAutoRefresh();
+  }
+  // No token -> login overlay stays visible
 });
 </script>
+</div><!-- #app -->
 </body>
 </html>
