@@ -1,16 +1,18 @@
-﻿import os
+import os
 import sys
 import time as _time
 import secrets
 import asyncio
 import logging
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Request, Query, Depends, HTTPException, Header
+from fastapi import FastAPI, Request, Query, Depends, HTTPException, Header, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 from cachetools import TTLCache
 import uvicorn
 from dotenv import load_dotenv
@@ -32,7 +34,6 @@ logger = logging.getLogger("dashboard")
 
 KST = ZoneInfo("Asia/Seoul")
 
-# Sheets API I/O bound => more workers
 executor = ThreadPoolExecutor(max_workers=16)
 
 # -- TTL caches ----------------------------------------------------------------
@@ -47,12 +48,60 @@ DASH_PASS = os.environ.get("DASHBOARD_PASS") or ""
 if not DASH_PASS:
     raise RuntimeError("DASHBOARD_PASS 환경 변수를 반드시 설정하세요.")
 
+# -- Security headers middleware -----------------------------------------------
+# Fixes: Clickjacking (X-Frame-Options), MIME sniffing, Referrer leakage,
+#        Server version disclosure, API response caching.
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        # Suppress server fingerprint
+        response.headers["server"] = "server"
+        # Prevent financial data from being cached by proxies/browsers
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# -- Brute-force rate limiting -------------------------------------------------
+# Fixes: unlimited /api/auth attempts (CRITICAL)
+# Strategy: per-IP sliding window — max 10 failures per 60 seconds.
+# Lockout returns 429 with Retry-After header; real timing delay on each failure
+# makes parallel flooding expensive even below the threshold.
+_AUTH_MAX_FAILS  = 10
+_AUTH_WINDOW_SEC = 60
+_AUTH_DELAY_SEC  = 0.5   # sleep on every failure (timing defense)
+
+_fail_log: dict[str, list[float]] = defaultdict(list)  # ip -> [timestamp, ...]
+
+def _client_ip(request: Request) -> str:
+    # Prefer X-Forwarded-For (nginx/proxy), fall back to direct connection
+    xff = request.headers.get("X-Forwarded-For", "")
+    return xff.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+
+def _is_rate_limited(ip: str) -> bool:
+    now = _time.time()
+    window_start = now - _AUTH_WINDOW_SEC
+    # Prune old entries in-place
+    _fail_log[ip] = [t for t in _fail_log[ip] if t > window_start]
+    return len(_fail_log[ip]) >= _AUTH_MAX_FAILS
+
+def _record_fail(ip: str) -> None:
+    _fail_log[ip].append(_time.time())
+
+
 # -- Token auth ----------------------------------------------------------------
-_tokens: dict[str, float] = {}
+_tokens: dict[str, float] = {}  # token -> expiry timestamp
 
 def _new_token() -> str:
     tok = secrets.token_hex(32)
     _tokens[tok] = _time.time() + 86400  # 24 h
+    _purge_expired_tokens()
     return tok
 
 def _check_token(tok: str) -> bool:
@@ -61,6 +110,13 @@ def _check_token(tok: str) -> bool:
         _tokens.pop(tok, None)
         return False
     return True
+
+def _purge_expired_tokens() -> None:
+    # Fixes: unbounded memory growth from accumulated expired tokens.
+    now = _time.time()
+    expired = [t for t, exp in _tokens.items() if exp <= now]
+    for t in expired:
+        del _tokens[t]
 
 def verify_token(authorization: str = Header(default="")):
     tok = authorization.removeprefix("Bearer ").strip()
@@ -123,10 +179,34 @@ async def health():
 
 
 @app.post("/api/auth")
-async def api_auth(req: Request):
-    body = await req.json()
-    if secrets.compare_digest(body.get("password", ""), DASH_PASS):
+async def api_auth(request: Request):
+    """비밀번호 검증 후 24시간 Bearer 토큰 발급.
+
+    Rate-limited: 60초 창에서 IP당 최대 10회 실패.
+    각 실패마다 0.5초 지연(타이밍 공격 방어).
+    """
+    ip = _client_ip(request)
+
+    if _is_rate_limited(ip):
+        logger.warning("auth rate-limit hit from %s", ip)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed attempts. Try again later.",
+            headers={"Retry-After": str(_AUTH_WINDOW_SEC)},
+        )
+
+    body = await request.json()
+    pw = body.get("password", "")
+
+    if secrets.compare_digest(pw, DASH_PASS):
+        logger.info("auth success from %s", ip)
         return {"token": _new_token()}
+
+    # Wrong password: record failure, delay, return generic error
+    _record_fail(ip)
+    await asyncio.sleep(_AUTH_DELAY_SEC)
+    remaining = _AUTH_MAX_FAILS - len(_fail_log[ip])
+    logger.warning("auth failed from %s (%d attempts remaining in window)", ip, remaining)
     raise HTTPException(status_code=401, detail="Invalid password")
 
 
