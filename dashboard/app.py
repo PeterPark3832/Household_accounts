@@ -47,6 +47,15 @@ _trend_cache  = TTLCache(maxsize=12, ttl=120)
 app = FastAPI(title="가계부 대시보드", docs_url=None, redoc_url=None)
 
 
+
+class TransactionInsert(BaseModel):
+    type:         str   = Field(..., pattern="^(income|expense)$")
+    category:     str   = Field(..., min_length=1, max_length=50)
+    amount:       float = Field(..., gt=0)
+    memo:         str   = Field("", max_length=200)
+    date:         str   = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    user_id:      int
+    display_name: str   = Field(..., min_length=1, max_length=50)
 class TransactionUpdate(BaseModel):
     amount:   Optional[float] = Field(None, gt=0)
     memo:     Optional[str]   = Field(None, max_length=200)
@@ -517,6 +526,25 @@ async def api_annual(year: int = Query(None)):
         logger.error("api_annual(%d) failed: %s", year, e, exc_info=True)
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
 
+
+
+@app.post("/api/transactions", dependencies=[Depends(verify_token)])
+async def api_add_transaction(body: TransactionInsert):
+    """새 거래 기록 추가."""
+    try:
+        from datetime import datetime as _dt
+        dt = _dt.strptime(body.date, "%Y-%m-%d").replace(tzinfo=KST)
+        rec_id = await run_sync(
+            sheets.insert_record,
+            body.user_id, body.display_name, body.type,
+            body.category, body.amount, body.memo, dt,
+        )
+        _dash_cache.clear(); _annual_cache.clear(); _trend_cache.clear()
+        logger.info("Transaction added: %s type=%s amt=%s", rec_id, body.type, body.amount)
+        return {"status": "created", "id": rec_id}
+    except Exception as e:
+        logger.error("add_transaction failed: %s", e, exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "추가에 실패했습니다."})
 
 @app.patch("/api/transactions/{rec_id}", dependencies=[Depends(verify_token)])
 async def api_update_transaction(rec_id: str, body: TransactionUpdate):
