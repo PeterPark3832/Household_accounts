@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time as _time
 import secrets
@@ -13,6 +14,8 @@ from fastapi import FastAPI, Request, Query, Depends, HTTPException, Header, Res
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional
 from cachetools import TTLCache
 import uvicorn
 from dotenv import load_dotenv
@@ -42,6 +45,12 @@ _annual_cache = TTLCache(maxsize=10, ttl=300)
 _trend_cache  = TTLCache(maxsize=12, ttl=120)
 
 app = FastAPI(title="가계부 대시보드", docs_url=None, redoc_url=None)
+
+
+class TransactionUpdate(BaseModel):
+    amount:   Optional[float] = Field(None, gt=0)
+    memo:     Optional[str]   = Field(None, max_length=200)
+    category: Optional[str]   = Field(None, min_length=1, max_length=50)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 DASH_PASS = os.environ.get("DASHBOARD_PASS") or ""
@@ -507,6 +516,55 @@ async def api_annual(year: int = Query(None)):
     except Exception as e:
         logger.error("api_annual(%d) failed: %s", year, e, exc_info=True)
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
+
+
+@app.patch("/api/transactions/{rec_id}", dependencies=[Depends(verify_token)])
+async def api_update_transaction(rec_id: str, body: TransactionUpdate):
+    """거래 기록 수정 — amount / memo / category 필드 대상."""
+    if not re.fullmatch(r"[A-Fa-f0-9]{8}", rec_id):
+        raise HTTPException(status_code=400, detail="잘못된 ID 형식입니다.")
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="수정할 필드가 없습니다.")
+    if "amount" in updates:
+        updates["amount"] = str(updates["amount"])
+    try:
+        updated = await run_sync(sheets.update_record_by_id, rec_id, updates)
+        if not updated:
+            raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
+        _dash_cache.clear()
+        _annual_cache.clear()
+        _trend_cache.clear()
+        logger.info("Transaction updated: %s fields=%s", rec_id, list(updates.keys()))
+        return {"status": "updated", "id": rec_id}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("update_transaction(%s) failed: %s", rec_id, e, exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "수정에 실패했습니다."})
+
+
+@app.delete("/api/transactions/{rec_id}", dependencies=[Depends(verify_token)])
+async def api_delete_transaction(rec_id: str):
+    """거래 기록 삭제 — 대시보드 관리자 전용."""
+    if not re.fullmatch(r"[A-Fa-f0-9]{8}", rec_id):
+        raise HTTPException(status_code=400, detail="잘못된 ID 형식입니다.")
+    try:
+        deleted = await run_sync(sheets.delete_record_by_id, rec_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="기록을 찾을 수 없습니다.")
+        _dash_cache.clear()
+        _annual_cache.clear()
+        _trend_cache.clear()
+        logger.info("Transaction deleted: %s", rec_id)
+        return {"status": "deleted", "id": rec_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("delete_transaction(%s) failed: %s", rec_id, e, exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "삭제에 실패했습니다."})
 
 
 @app.post("/api/cache/clear", dependencies=[Depends(verify_token)])

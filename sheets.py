@@ -306,6 +306,35 @@ def delete_record(user_id: int, rec_id: str) -> bool:
     return False
 
 
+def delete_record_by_id(rec_id: str) -> bool:
+    """관리자용: user_id 확인 없이 ID로 기록 삭제."""
+    ws = get_sheet("records")
+    records = _safe_get_records(ws)
+    for i, row in enumerate(records, start=2):
+        if row["id"] == rec_id:
+            ws.delete_rows(i)
+            _invalidate_records_cache()
+            return True
+    return False
+
+
+def update_record_by_id(rec_id: str, fields: dict) -> bool:
+    """관리자용: user_id 확인 없이 ID로 기록의 여러 필드를 한 번에 수정.
+    fields 키는 EDITABLE_RECORD_FIELDS 범위 내여야 함."""
+    invalid = set(fields.keys()) - set(EDITABLE_RECORD_FIELDS.keys())
+    if invalid:
+        raise ValueError(f"수정 불가 필드: {invalid}")
+    ws = get_sheet("records")
+    records = _safe_get_records(ws)
+    for i, row in enumerate(records, start=2):
+        if row["id"] == rec_id:
+            for field, value in fields.items():
+                ws.update_cell(i, EDITABLE_RECORD_FIELDS[field], value)
+            _invalidate_records_cache()
+            return True
+    return False
+
+
 def get_recent_records(user_id: int | None = None, limit: int = 10) -> list[dict]:
     ws = get_sheet("records")
     all_rows = _safe_get_records(ws)

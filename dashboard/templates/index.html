@@ -334,6 +334,101 @@ button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:t
 .badge-expense{background:rgba(251,113,133,.12);color:var(--expense);padding:.2rem .6rem;border-radius:var(--radius-pill);font-size:.74rem;white-space:nowrap;font-weight:600;}
 .top-row td{background:rgba(251,113,133,.04)!important;}
 
+/* ── Transaction action buttons (edit / delete) ── */
+.tx-edit-btn,.tx-del-btn{
+  opacity:0;border:none;background:none;
+  padding:.18rem .38rem;border-radius:var(--radius-sm);
+  transition:opacity .15s,background .15s;cursor:pointer;font-size:.72rem;line-height:1;
+}
+.tx-edit-btn{color:var(--accent);}
+.tx-del-btn{color:var(--expense);}
+.tx-table tbody tr:hover .tx-edit-btn,
+.tx-table tbody tr:hover .tx-del-btn{opacity:1;}
+.tx-edit-btn:hover{background:rgba(139,92,246,.12);}
+.tx-del-btn:hover{background:rgba(251,113,133,.14);}
+.tx-edit-btn:disabled,.tx-del-btn:disabled{opacity:.4!important;cursor:not-allowed;}
+.tx-col-act{width:56px;padding:.6rem .35rem!important;white-space:nowrap;}
+
+/* ── Delete confirmation modal ── */
+.del-backdrop{
+  display:none;position:fixed;inset:0;background:rgba(51,47,71,.45);
+  z-index:1050;align-items:center;justify-content:center;
+}
+.del-backdrop.show{display:flex;}
+.del-modal{
+  background:var(--card);border-radius:var(--radius);padding:1.6rem 1.4rem;
+  max-width:320px;width:90%;box-shadow:var(--shadow);text-align:center;
+}
+.del-modal-icon{font-size:1.6rem;color:var(--expense);margin-bottom:.6rem;}
+.del-modal-title{font-weight:700;font-size:.95rem;color:var(--text);margin-bottom:.35rem;}
+.del-modal-sub{font-size:.8rem;color:var(--muted);margin-bottom:1.2rem;line-height:1.5;}
+.del-modal-row{display:flex;gap:.6rem;}
+.del-modal-cancel{
+  flex:1;padding:.5rem;border:1px solid var(--border);background:var(--card);
+  color:var(--text);border-radius:var(--radius-pill);cursor:pointer;font-size:.83rem;
+  transition:background .15s;
+}
+.del-modal-cancel:hover{background:var(--bg);}
+.del-modal-ok{
+  flex:1;padding:.5rem;border:none;
+  background:linear-gradient(135deg,#FB7185,#F43F5E);
+  color:#fff;border-radius:var(--radius-pill);cursor:pointer;
+  font-size:.83rem;font-weight:600;box-shadow:0 4px 12px rgba(251,113,133,.35);
+  transition:opacity .15s;
+}
+.del-modal-ok:hover{opacity:.9;}
+
+/* ── Edit modal ── */
+.edit-backdrop{
+  display:none;position:fixed;inset:0;background:rgba(51,47,71,.45);
+  z-index:1050;align-items:center;justify-content:center;
+}
+.edit-backdrop.show{display:flex;}
+.edit-modal{
+  background:var(--card);border-radius:var(--radius);padding:1.6rem 1.4rem;
+  max-width:360px;width:92%;box-shadow:var(--shadow);
+}
+.edit-modal-title{font-weight:700;font-size:.95rem;color:var(--text);margin-bottom:.15rem;display:flex;align-items:center;gap:.45rem;}
+.edit-modal-meta{font-size:.75rem;color:var(--muted);margin-bottom:1rem;}
+.edit-field{margin-bottom:.85rem;}
+.edit-field label{display:block;font-size:.75rem;font-weight:600;color:var(--muted);margin-bottom:.3rem;text-transform:uppercase;letter-spacing:.03em;}
+.edit-field input{
+  width:100%;padding:.48rem .75rem;border:1px solid var(--border);
+  border-radius:var(--radius-sm);background:var(--bg);color:var(--text);
+  font-size:.85rem;outline:none;transition:border-color .15s;
+}
+.edit-field input:focus{border-color:var(--accent);background:var(--card);}
+.edit-modal-row{display:flex;gap:.6rem;margin-top:1.1rem;}
+.edit-modal-cancel{
+  flex:1;padding:.5rem;border:1px solid var(--border);background:var(--card);
+  color:var(--text);border-radius:var(--radius-pill);cursor:pointer;font-size:.83rem;
+  transition:background .15s;
+}
+.edit-modal-cancel:hover{background:var(--bg);}
+.edit-modal-save{
+  flex:1;padding:.5rem;border:none;
+  background:linear-gradient(135deg,var(--accent),var(--accent-pink));
+  color:#fff;border-radius:var(--radius-pill);cursor:pointer;
+  font-size:.83rem;font-weight:600;box-shadow:0 4px 12px rgba(139,92,246,.3);
+  transition:opacity .15s;
+}
+.edit-modal-save:hover{opacity:.9;}
+.edit-modal-save:disabled{opacity:.5;cursor:not-allowed;}
+
+/* ── Toast notification ── */
+.toast-rack{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:2000;display:flex;flex-direction:column;gap:.4rem;pointer-events:none;}
+.toast-item{
+  background:var(--text);color:#fff;padding:.45rem 1rem;
+  border-radius:var(--radius-pill);font-size:.8rem;
+  box-shadow:0 4px 14px rgba(51,47,71,.3);
+  animation:toastIn .2s ease,toastOut .25s ease 1.75s forwards;
+  white-space:nowrap;
+}
+.toast-item.ok{background:linear-gradient(135deg,#22C55E,#16A34A);}
+.toast-item.err{background:linear-gradient(135deg,#FB7185,#F43F5E);}
+@keyframes toastIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes toastOut{from{opacity:1}to{opacity:0;transform:translateY(-4px)}}
+
 /* ── Annual year nav ── */
 .year-nav button{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:var(--radius-sm);width:28px;height:28px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:.75rem;transition:all .15s;}
 .year-nav button:hover{background:var(--accent-lt);color:var(--accent);border-color:var(--accent);}
@@ -433,6 +528,7 @@ button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:t
   .tx-col-name,.tx-col-memo{display:none;}
   .tx-table{min-width:280px;}
   .tx-table td,.tx-table th{padding:.4rem .38rem;font-size:.76rem;}
+  .tx-edit-btn,.tx-del-btn{opacity:.45;}
 
   #annual-year-label{font-size:.85rem;}
   .year-nav button{width:34px;height:34px;}
@@ -769,6 +865,7 @@ button,a,[role="button"]{touch-action:manipulation;-webkit-tap-highlight-color:t
                   <th>카테고리</th>
                   <th class="text-end">금액</th>
                   <th class="tx-col-memo">메모</th>
+                  <th class="tx-col-act"></th>
                 </tr></thead>
                 <tbody id="tx-body"></tbody>
               </table>
@@ -1304,7 +1401,7 @@ function renderTx() {
   const topAmt=data.filter(t=>t.type==='expense').reduce((m,t)=>Math.max(m,parseFloat(t.amount)),0);
   const tbody=document.getElementById('tx-body');
   tbody.innerHTML='';
-  if(!data.length){tbody.innerHTML='<tr><td colspan="6" class="empty">거래 내역이 없습니다</td></tr>';return;}
+  if(!data.length){tbody.innerHTML='<tr><td colspan="7" class="empty">거래 내역이 없습니다</td></tr>';return;}
   const frag=document.createDocumentFragment();
   data.forEach(t=>{
     const inc=t.type==='income';
@@ -1314,10 +1411,26 @@ function renderTx() {
     const tr=document.createElement('tr'); if(isTop) tr.className='top-row';
     const tdDate=document.createElement('td');tdDate.style.cssText='color:var(--muted);white-space:nowrap;';tdDate.textContent=fmtDate(t.date);tr.appendChild(tdDate);
     const tdName=document.createElement('td');tdName.className='tx-col-name';tdName.textContent=t.display_name||'—';tr.appendChild(tdName);
-    const tdType=document.createElement('td');tdType.innerHTML=`<span class="badge-${inc?'income':'expense'}">${inc?'수입':'지출'}</span>`;tr.appendChild(tdType);
+    const tdType=document.createElement('td');
+    const badge=document.createElement('span');badge.className=`badge-${inc?'income':'expense'}`;badge.textContent=inc?'수입':'지출';
+    tdType.appendChild(badge);tr.appendChild(tdType);
     const tdCat=document.createElement('td');tdCat.style.whiteSpace='nowrap';tdCat.textContent=t.category||'—';tr.appendChild(tdCat);
     const tdAmt=document.createElement('td');tdAmt.className='text-end';tdAmt.style.cssText=`color:${color};font-weight:600;white-space:nowrap;`;tdAmt.textContent=`${sign}${fmt(t.amount)}${isTop?' 🔺':''}`;tr.appendChild(tdAmt);
     const tdMemo=document.createElement('td');tdMemo.className='tx-col-memo';tdMemo.style.color='var(--muted)';tdMemo.textContent=t.memo||'';tr.appendChild(tdMemo);
+    const tdAct=document.createElement('td');tdAct.className='tx-col-act';
+    if(t.id){
+      const editBtn=document.createElement('button');
+      editBtn.className='tx-edit-btn';editBtn.title='수정';editBtn.setAttribute('aria-label','기록 수정');
+      editBtn.innerHTML='<i class="fas fa-pen"></i>';
+      editBtn.addEventListener('click',()=>openEditModal(t));
+      tdAct.appendChild(editBtn);
+      const delBtn=document.createElement('button');
+      delBtn.className='tx-del-btn';delBtn.title='삭제';delBtn.setAttribute('data-del-id',t.id);delBtn.setAttribute('aria-label','기록 삭제');
+      delBtn.innerHTML='<i class="fas fa-trash-can"></i>';
+      delBtn.addEventListener('click',()=>openDelModal(t));
+      tdAct.appendChild(delBtn);
+    }
+    tr.appendChild(tdAct);
     frag.appendChild(tr);
   });
   tbody.appendChild(frag);
@@ -1329,6 +1442,110 @@ function filterTx(type,btn){
   renderTx();
 }
 function searchTx(q){txSearch=q;renderTx();}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+function showToast(msg,type=''){
+  const rack=document.getElementById('toast-rack');
+  const el=document.createElement('div');
+  el.className='toast-item'+(type?' '+type:'');
+  el.textContent=msg;
+  rack.appendChild(el);
+  setTimeout(()=>el.remove(),2100);
+}
+
+// ── Delete transaction ─────────────────────────────────────────────────────────
+let _delPending=null;
+function openDelModal(t){
+  _delPending=t;
+  const inc=t.type==='income';
+  const sub=document.getElementById('del-modal-sub');
+  sub.textContent=`${fmtDate(t.date)}  ${t.category||''}  ${inc?'+':'−'}${fmt(t.amount)}`;
+  const warn=document.createElement('div');
+  warn.style.cssText='margin-top:.35rem;font-size:.75rem;color:var(--expense);';
+  warn.textContent='삭제 후 복구할 수 없습니다.';
+  sub.appendChild(warn);
+  document.getElementById('del-modal-ok').onclick=confirmDel;
+  document.getElementById('del-backdrop').classList.add('show');
+}
+function closeDelModal(){
+  _delPending=null;
+  document.getElementById('del-backdrop').classList.remove('show');
+}
+async function confirmDel(){
+  const t=_delPending;
+  if(!t||!t.id) return;
+  closeDelModal();
+  const btn=document.querySelector(`[data-del-id="${t.id}"]`);
+  if(btn){btn.disabled=true;btn.innerHTML='<i class="fas fa-spinner fa-spin"></i>';}
+  try{
+    const r=await fetch(`/api/transactions/${encodeURIComponent(t.id)}`,{
+      method:'DELETE',headers:{'Authorization':'Bearer '+TOKEN}
+    });
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||r.statusText);}
+    allTx=allTx.filter(x=>x.id!==t.id);
+    if(_dashData) _dashData.transactions=_dashData.transactions.filter(x=>x.id!==t.id);
+    renderTx();
+    showToast('기록이 삭제되었습니다','ok');
+  }catch(e){
+    showToast('삭제 실패: '+e.message,'err');
+    if(btn){btn.disabled=false;btn.innerHTML='<i class="fas fa-trash-can"></i>';}
+  }
+}
+
+// ── Edit transaction ───────────────────────────────────────────────────────────
+let _editPending=null;
+function openEditModal(t){
+  _editPending=t;
+  const inc=t.type==='income';
+  document.getElementById('edit-modal-meta').textContent=
+    `${fmtDate(t.date)}  ·  ${t.display_name||''}  ·  ${inc?'수입':'지출'}`;
+  document.getElementById('edit-cat').value=t.category||'';
+  document.getElementById('edit-amt').value=parseFloat(t.amount)||'';
+  document.getElementById('edit-memo').value=t.memo||'';
+  document.getElementById('edit-modal-save').onclick=saveEdit;
+  document.getElementById('edit-backdrop').classList.add('show');
+  document.getElementById('edit-cat').focus();
+}
+function closeEditModal(){
+  _editPending=null;
+  document.getElementById('edit-backdrop').classList.remove('show');
+}
+async function saveEdit(){
+  const t=_editPending;
+  if(!t||!t.id) return;
+  const cat=document.getElementById('edit-cat').value.trim();
+  const amt=parseFloat(document.getElementById('edit-amt').value);
+  const memo=document.getElementById('edit-memo').value.trim();
+  if(!cat){showToast('카테고리를 입력하세요','err');return;}
+  if(!amt||amt<=0){showToast('유효한 금액을 입력하세요','err');return;}
+  const body={};
+  if(cat!=(t.category||'')) body.category=cat;
+  if(amt!=parseFloat(t.amount)) body.amount=amt;
+  if(memo!=(t.memo||'')) body.memo=memo;
+  if(!Object.keys(body).length){closeEditModal();return;}
+  const saveBtn=document.getElementById('edit-modal-save');
+  saveBtn.disabled=true;saveBtn.textContent='저장 중…';
+  try{
+    const r=await fetch(`/api/transactions/${encodeURIComponent(t.id)}`,{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+TOKEN},
+      body:JSON.stringify(body),
+    });
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||r.statusText);}
+    Object.assign(t,{
+      category:body.category??t.category,
+      amount:body.amount??t.amount,
+      memo:body.memo??t.memo,
+    });
+    closeEditModal();
+    renderTx();
+    showToast('수정되었습니다','ok');
+  }catch(e){
+    showToast('수정 실패: '+e.message,'err');
+  }finally{
+    saveBtn.disabled=false;saveBtn.textContent='저장';
+  }
+}
 
 // ── Resize ─────────────────────────────────────────────────────────────────────
 let _rTimer;
@@ -1353,6 +1570,47 @@ document.addEventListener('DOMContentLoaded',()=>{
   // No token -> login overlay stays visible
 });
 </script>
+
+<!-- Delete confirmation modal -->
+<div class="del-backdrop" id="del-backdrop" role="dialog" aria-modal="true" onclick="if(event.target===this)closeDelModal()">
+  <div class="del-modal">
+    <div class="del-modal-icon"><i class="fas fa-trash-can"></i></div>
+    <div class="del-modal-title">기록 삭제</div>
+    <div class="del-modal-sub" id="del-modal-sub"></div>
+    <div class="del-modal-row">
+      <button class="del-modal-cancel" onclick="closeDelModal()">취소</button>
+      <button class="del-modal-ok" id="del-modal-ok">삭제</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit modal -->
+<div class="edit-backdrop" id="edit-backdrop" role="dialog" aria-modal="true" onclick="if(event.target===this)closeEditModal()">
+  <div class="edit-modal">
+    <div class="edit-modal-title"><i class="fas fa-pen" style="color:var(--accent);font-size:.85rem;"></i> 기록 수정</div>
+    <div class="edit-modal-meta" id="edit-modal-meta"></div>
+    <div class="edit-field">
+      <label>카테고리</label>
+      <input id="edit-cat" type="text" maxlength="50" autocomplete="off">
+    </div>
+    <div class="edit-field">
+      <label>금액 (원)</label>
+      <input id="edit-amt" type="number" min="1" step="1">
+    </div>
+    <div class="edit-field">
+      <label>메모</label>
+      <input id="edit-memo" type="text" maxlength="200" autocomplete="off">
+    </div>
+    <div class="edit-modal-row">
+      <button class="edit-modal-cancel" onclick="closeEditModal()">취소</button>
+      <button class="edit-modal-save" id="edit-modal-save">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast rack -->
+<div class="toast-rack" id="toast-rack"></div>
+
 </div><!-- #app -->
 </body>
 </html>
