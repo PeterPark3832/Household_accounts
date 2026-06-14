@@ -6,11 +6,13 @@ Part 1 — pure helper functions (build_budget_report, pct_change):
 
 Part 2 — FastAPI HTTP endpoints via httpx.AsyncClient:
   sheets.py functions are monkey-patched so no Google Sheets calls occur.
+  Auth uses Bearer token injected directly into dashboard_app._tokens.
 
 conftest.py handles all heavy-dep stubs and loads the real sheets module.
 """
 import sys
 import os
+import time as _time
 
 import pytest
 import pytest_asyncio
@@ -26,11 +28,11 @@ import app as dashboard_app  # noqa: E402
 from app import build_budget_report, pct_change  # noqa: E402
 
 # ── httpx async client ────────────────────────────────────────────────────────
-from httpx import AsyncClient, BasicAuth  # noqa: E402
+from httpx import AsyncClient  # noqa: E402
 from httpx._transports.asgi import ASGITransport  # noqa: E402
 
-GOOD_AUTH = BasicAuth("testuser", "testpass")
-BAD_AUTH  = BasicAuth("wrong",    "creds")
+_GOOD_TOKEN = "test_good_token_0123456789abcdef"
+GOOD_HDRS   = {"Authorization": f"Bearer {_GOOD_TOKEN}"}
 
 BASE = "http://test"
 
@@ -152,10 +154,17 @@ def patch_sheets(monkeypatch):
     monkeypatch.setattr(_sheets, "monthly_breakdown",      _sheets.__dict__["monthly_breakdown"])
     monkeypatch.setattr(_sheets, "breakdown_by_user",      _sheets.__dict__["breakdown_by_user"])
 
+    # Inject a valid Bearer token for the duration of each test
+    dashboard_app._tokens[_GOOD_TOKEN] = _time.time() + 3600
+
     # Clear TTL caches between tests so cached responses don't leak
     dashboard_app._dash_cache.clear()
     dashboard_app._annual_cache.clear()
     dashboard_app._trend_cache.clear()
+
+    yield
+
+    dashboard_app._tokens.pop(_GOOD_TOKEN, None)
 
 
 # ── authentication ────────────────────────────────────────────────────────────
@@ -168,8 +177,9 @@ async def test_auth_no_credentials_returns_401():
 
 
 @pytest.mark.asyncio
-async def test_auth_wrong_credentials_returns_401():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=BAD_AUTH) as client:
+async def test_auth_wrong_token_returns_401():
+    async with AsyncClient(transport=_transport(), base_url=BASE,
+                           headers={"Authorization": "Bearer wrong_token"}) as client:
         r = await client.get("/api/summary")
     assert r.status_code == 401
 
@@ -186,7 +196,7 @@ async def test_health_endpoint_no_auth_required():
 
 @pytest.mark.asyncio
 async def test_summary_response_shape():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/summary", params={"year": 2024, "month": 6})
     assert r.status_code == 200
     body = r.json()
@@ -196,7 +206,7 @@ async def test_summary_response_shape():
 
 @pytest.mark.asyncio
 async def test_summary_correct_values():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/summary", params={"year": 2024, "month": 6})
     body = r.json()
     assert body["income"]  == 500_000
@@ -209,7 +219,7 @@ async def test_summary_correct_values():
 
 @pytest.mark.asyncio
 async def test_breakdown_expense_shape():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/breakdown", params={"year": 2024, "month": 6, "record_type": "expense"})
     assert r.status_code == 200
     body = r.json()
@@ -220,7 +230,7 @@ async def test_breakdown_expense_shape():
 
 @pytest.mark.asyncio
 async def test_breakdown_expense_values():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/breakdown", params={"year": 2024, "month": 6, "record_type": "expense"})
     breakdown = r.json()["breakdown"]
     assert breakdown.get("식비")   == 30_000
@@ -231,7 +241,7 @@ async def test_breakdown_expense_values():
 
 @pytest.mark.asyncio
 async def test_budgets_response_is_list():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/budgets", params={"year": 2024, "month": 6})
     assert r.status_code == 200
     assert isinstance(r.json(), list)
@@ -239,7 +249,7 @@ async def test_budgets_response_is_list():
 
 @pytest.mark.asyncio
 async def test_budgets_row_shape():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/budgets", params={"year": 2024, "month": 6})
     for row in r.json():
         for key in ("category", "budget", "actual", "percentage", "over_budget"):
@@ -248,7 +258,7 @@ async def test_budgets_row_shape():
 
 @pytest.mark.asyncio
 async def test_budgets_식비_within_budget():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/budgets", params={"year": 2024, "month": 6})
     rows = {row["category"]: row for row in r.json()}
     assert "식비" in rows
@@ -260,7 +270,7 @@ async def test_budgets_식비_within_budget():
 @pytest.mark.asyncio
 async def test_budgets_unbudgeted_category_included():
     # 교통비 has no budget set but has actual spend → must appear as over_budget
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/budgets", params={"year": 2024, "month": 6})
     rows = {row["category"]: row for row in r.json()}
     assert "교통비" in rows
@@ -272,7 +282,7 @@ async def test_budgets_unbudgeted_category_included():
 
 @pytest.mark.asyncio
 async def test_members_response_shape():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/members", params={"year": 2024, "month": 6})
     assert r.status_code == 200
     body = r.json()
@@ -283,7 +293,7 @@ async def test_members_response_shape():
 
 @pytest.mark.asyncio
 async def test_members_correct_amounts():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/members", params={"year": 2024, "month": 6})
     member = r.json()["홍길동"]
     assert member["income"]  == 500_000
@@ -294,7 +304,7 @@ async def test_members_correct_amounts():
 
 @pytest.mark.asyncio
 async def test_transactions_is_list():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/transactions", params={"year": 2024, "month": 6})
     assert r.status_code == 200
     assert isinstance(r.json(), list)
@@ -303,7 +313,7 @@ async def test_transactions_is_list():
 
 @pytest.mark.asyncio
 async def test_transactions_sorted_by_date_descending():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/transactions", params={"year": 2024, "month": 6})
     dates = [rec["date"] for rec in r.json()]
     assert dates == sorted(dates, reverse=True)
@@ -314,7 +324,7 @@ async def test_transactions_limit_param(monkeypatch):
     import sheets as _sheets
     big_list = _SAMPLE_RECORDS * 10   # 30 records
     monkeypatch.setattr(_sheets, "get_records_for_month", lambda *a, **kw: list(big_list))
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.get("/api/transactions", params={"year": 2024, "month": 6, "limit": 5})
     assert len(r.json()) == 5
 
@@ -323,14 +333,99 @@ async def test_transactions_limit_param(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_clear_cache_returns_ok():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
-        r = await client.post("/api/cache/clear", headers={"X-Dashboard-Clear": "1"})
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.post("/api/cache/clear",
+                              headers={**GOOD_HDRS, "X-Dashboard-Clear": "1"})
     assert r.status_code == 200
     assert r.json()["status"] == "cleared"
 
 
 @pytest.mark.asyncio
 async def test_clear_cache_requires_csrf_header():
-    async with AsyncClient(transport=_transport(), base_url=BASE, auth=GOOD_AUTH) as client:
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
         r = await client.post("/api/cache/clear")
     assert r.status_code == 400
+
+
+# ── DELETE /api/transactions/{rec_id} ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_delete_transaction_success(monkeypatch):
+    import sheets as _sheets
+    monkeypatch.setattr(_sheets, "delete_record_by_id", lambda rec_id: True)
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.delete("/api/transactions/AABBCCDD")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "deleted"
+    assert body["id"] == "AABBCCDD"
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_not_found(monkeypatch):
+    import sheets as _sheets
+    monkeypatch.setattr(_sheets, "delete_record_by_id", lambda rec_id: False)
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.delete("/api/transactions/AABBCCDD")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_invalid_id():
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.delete("/api/transactions/INVALID!!")
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_requires_auth():
+    async with AsyncClient(transport=_transport(), base_url=BASE) as client:
+        r = await client.delete("/api/transactions/AABBCCDD")
+    assert r.status_code == 401
+
+
+# ── PATCH /api/transactions/{rec_id} ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_update_transaction_success(monkeypatch):
+    import sheets as _sheets
+    monkeypatch.setattr(_sheets, "update_record_by_id", lambda rec_id, fields: True)
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.patch(
+            "/api/transactions/AABBCCDD",
+            json={"category": "식비", "amount": 50000, "memo": "테스트"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "updated"
+    assert body["id"] == "AABBCCDD"
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_not_found(monkeypatch):
+    import sheets as _sheets
+    monkeypatch.setattr(_sheets, "update_record_by_id", lambda rec_id, fields: False)
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.patch("/api/transactions/AABBCCDD", json={"memo": "변경"})
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_empty_body():
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.patch("/api/transactions/AABBCCDD", json={})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_invalid_id():
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.patch("/api/transactions/TOOSHORT", json={"memo": "변경"})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_requires_auth():
+    async with AsyncClient(transport=_transport(), base_url=BASE) as client:
+        r = await client.patch("/api/transactions/AABBCCDD", json={"memo": "변경"})
+    assert r.status_code == 401
