@@ -5,17 +5,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 보안: root 대신 전용 사용자로 실행
-# 설정 방법: sudo useradd -r -s /bin/false budget
-User=budget
-Group=budget
-WorkingDirectory=/home/budget/household
-ExecStart=/home/budget/household/venv/bin/python /home/budget/household/budget_bot.py
+# 배포 경로는 대시보드(household-dashboard.service)와 동일한 /root/Household_accounts 로 통일.
+# /root 는 0700 이라 전용 계정으로는 접근 불가하므로 root 로 실행한다.
+User=root
+WorkingDirectory=/root/Household_accounts
+ExecStart=/root/Household_accounts/venv/bin/python /root/Household_accounts/budget_bot.py
 Restart=on-failure
 RestartSec=10
 
 # 환경변수 & 로그
-EnvironmentFile=/home/budget/household/.env
+EnvironmentFile=/root/Household_accounts/.env
+Environment=MPLCONFIGDIR=/root/Household_accounts/.mplcache
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=budget_bot
@@ -24,7 +24,7 @@ SyslogIdentifier=budget_bot
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/home/budget/household
+ReadWritePaths=/root/Household_accounts
 
 # 리소스 제한 (메모리 512MB / CPU 50%)
 MemoryMax=512M

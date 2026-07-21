@@ -25,6 +25,19 @@ env/
 *.db
 *.sqlite
 
+# 대시보드
+dashboard/venv/
+dashboard/__pycache__/
+dashboard/*.pyc
+
+# matplotlib 캐시 (ProtectSystem=strict 하에서 쓰기 가능한 경로)
+.mplcache/
+
+# 편집 중 백업본 (배포 경로에 쌓이지 않도록)
+*.bak
+*.bak[0-9]
+*.presec
+
 # OS
 .DS_Store
 Thumbs.db
