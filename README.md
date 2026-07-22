@@ -43,6 +43,10 @@ household_budget_bot_v2/
 
 ## 2. Vultr 서버 배포
 
+> 🚀 **자동 배포 · 10분 재구축**은 [`docs/DEPLOY.md`](docs/DEPLOY.md) 참고
+> (`scripts/provision.sh` 로 새 서버 세팅, `main` 푸시 시 GitHub Actions 자동 배포).
+> 아래는 수동 배포 절차입니다.
+
 ```bash
 # 1. 파일 업로드
 scp -r household_budget_bot_v2 ubuntu@your-ip:~/
