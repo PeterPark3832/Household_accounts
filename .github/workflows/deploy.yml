@@ -1,0 +1,65 @@
+name: Deploy to production
+
+# main 에 푸시되면 → 테스트 통과 시 → 서버에 SSH 배포.
+# 수동 실행도 가능(Actions 탭 → Run workflow).
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# 배포가 겹치지 않도록 직렬화 (진행 중인 배포는 취소하지 않음)
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r dashboard/requirements.txt \
+                      pytest pytest-asyncio httpx python-multipart
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy over SSH
+        env:
+          SSH_KEY:         ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST:        ${{ secrets.DEPLOY_HOST }}
+          SSH_USER:        ${{ secrets.DEPLOY_USER }}
+          SSH_PORT:        ${{ secrets.DEPLOY_PORT }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${SSH_KEY:?DEPLOY_SSH_KEY secret 필요}"
+          : "${SSH_HOST:?DEPLOY_HOST secret 필요}"
+          : "${SSH_USER:?DEPLOY_USER secret 필요}"
+          PORT="${SSH_PORT:-22}"
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # 호스트 키 검증: 핀 고정본(권장)이 있으면 사용, 없으면 keyscan(TOFU)
+          if [ -n "${SSH_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "$PORT" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/deploy_key -p "$PORT" \
+              -o StrictHostKeyChecking=yes \
+              "$SSH_USER@$SSH_HOST" 'bash -s' < scripts/deploy-remote.sh
