@@ -1,0 +1,5 @@
+# 이 저장소는 Linux 서버에 배포됩니다. 셸 스크립트/유닛 파일은 CRLF가 섞이면
+# 실행이 깨지므로 항상 LF로 커밋·체크아웃되도록 강제합니다.
+*.sh        text eol=lf
+*.service   text eol=lf
+scripts/*   text eol=lf
