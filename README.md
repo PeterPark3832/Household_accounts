@@ -4,16 +4,23 @@
 
 ## 파일 구조
 ```
-household_budget_bot_v2/
+Household_accounts/
 ├── budget_bot.py        # 메인 봇
 ├── sheets.py            # Google Sheets CRUD
 ├── charts.py            # 차트 생성 (matplotlib)
+├── budget_bot.service   # systemd (봇)
 ├── requirements.txt
 ├── credentials.json     # Google Service Account (직접 다운로드)
-├── .env                 # 환경변수
-├── .env.example
-└── budget_bot.service   # systemd
+├── .env / .env.example  # 환경변수
+├── dashboard/           # 웹 대시보드 (FastAPI, :8081) + dashboard.service
+├── scripts/             # provision.sh(재구축) · deploy-remote.sh(배포)
+├── docs/DEPLOY.md       # 배포·재구축 가이드
+└── tests/
 ```
+
+> **배포 구성**: 봇·대시보드가 모두 `/root/Household_accounts` 한 곳에서 root 로 실행됩니다.
+> `main` 에 push 하면 GitHub Actions 가 테스트 후 서버에 자동 배포합니다.
+> 상세는 [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ---
 
@@ -41,54 +48,34 @@ household_budget_bot_v2/
 
 ---
 
-## 2. Vultr 서버 배포
+## 2. 서버 배포
 
-> 🚀 **자동 배포 · 10분 재구축**은 [`docs/DEPLOY.md`](docs/DEPLOY.md) 참고
-> (`scripts/provision.sh` 로 새 서버 세팅, `main` 푸시 시 GitHub Actions 자동 배포).
-> 아래는 수동 배포 절차입니다.
+### 권장: 자동 배포 · 10분 재구축 — [`docs/DEPLOY.md`](docs/DEPLOY.md)
+
+- **새 서버 / 재구축**: `sudo bash scripts/provision.sh` (패키지 → 코드 → venv 2개 →
+  systemd 등록까지). 시크릿(`​.env`, `credentials.json`)만 올리면 됩니다.
+- **자동 배포**: `git push origin main` → 테스트 → 서버에 SSH 배포(pull → 의존성 →
+  서비스 재시작 → `/health` 검증). 데이터는 전부 Google Sheets 에 있어 **서버는 일회용**.
+
+### 수동 배포 (Actions 없이 서버에서 직접)
 
 ```bash
-# 1. 파일 업로드
-scp -r household_budget_bot_v2 ubuntu@your-ip:~/
-scp credentials.json ubuntu@your-ip:~/household_budget_bot_v2/
-
-# 2. 서버 접속
-ssh ubuntu@your-ip
-cd household_budget_bot_v2
-
-# 3. 한국어 폰트 (차트용)
-sudo apt-get install -y fonts-nanum
-
-# 4. 가상환경 + 패키지
-python3 -m venv venv
-venv/bin/pip install -r requirements.txt
-
-# 5. .env 설정
-cp .env.example .env && nano .env
-
-# 6. 권한 설정
-chmod 600 .env credentials.json
+ssh root@<서버IP> 'bash -s' < scripts/deploy-remote.sh
 ```
+
+프로비저닝 없이 처음 세팅한다면 `docs/DEPLOY.md` A절을 따르세요. 핵심만:
+`/root/Household_accounts` 에 클론 → `python3 -m venv venv` + 대시보드 venv →
+`sudo apt-get install -y fonts-nanum`(차트 한글) → `.env`/`credentials.json` 배치
+(`chmod 600`) → `budget_bot.service`·`dashboard/dashboard.service` 를
+`/etc/systemd/system/` 에 설치 후 `enable --now`.
 
 ---
 
-## 3. systemd 등록
+## 3. 로그 확인
 
 ```bash
-sudo cp budget_bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable budget_bot
-sudo systemctl start budget_bot
-sudo systemctl status budget_bot
-```
-
----
-
-## 4. 로그 확인
-
-```bash
-sudo journalctl -u budget_bot -f
-tail -f budget_bot.log
+sudo journalctl -u budget_bot -f              # 봇
+sudo journalctl -u household-dashboard -f     # 대시보드
 ```
 
 ---
