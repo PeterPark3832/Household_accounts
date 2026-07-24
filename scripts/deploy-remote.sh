@@ -53,7 +53,13 @@ for s in "$BOT_SERVICE" "$WEB_SERVICE"; do
     echo "  ❌ $s 가 active 아님 (서버에서 'journalctl -u $s -n 50' 확인)"; fail=1
   fi
 done
-if curl -fsS --max-time 15 "$HEALTH_URL" >/dev/null; then
+# uvicorn 기동에 수 초 걸리므로 단발 체크는 오탐이 난다. 최대 ~30초 폴링.
+health_ok=0
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then health_ok=1; break; fi
+  sleep 1
+done
+if [ "$health_ok" = 1 ]; then
   echo "  ✅ 대시보드 헬스체크 OK ($HEALTH_URL)"
 else
   echo "  ❌ 대시보드 헬스체크 실패 ($HEALTH_URL)"; fail=1
