@@ -11,14 +11,18 @@ set -euo pipefail
 # 서버별 설정 (있으면 로드)
 [ -f "$HOME/.household-deploy.env" ] && . "$HOME/.household-deploy.env"
 
-# 기본값 (systemd 유닛 파일 기준; 설정파일로 오버라이드 가능)
-: "${APP_DIR:=/home/budget/household}"
+# 기본값 (실제 배포 구성 기준; 설정파일로 오버라이드 가능)
+# 봇·대시보드·git 체크아웃이 모두 /root/Household_accounts 한 곳에서 root 로 실행됨.
+: "${APP_DIR:=/root/Household_accounts}"
 : "${BRANCH:=main}"
 : "${BOT_VENV:=$APP_DIR/venv}"
 : "${WEB_VENV:=$APP_DIR/dashboard/venv}"
 : "${BOT_SERVICE:=budget_bot.service}"
-: "${WEB_SERVICE:=dashboard.service}"
-: "${HEALTH_URL:=http://127.0.0.1:8080/health}"
+: "${WEB_SERVICE:=household-dashboard.service}"
+: "${HEALTH_URL:=http://127.0.0.1:8081/health}"
+
+# root 로 실행되면 sudo 불필요; 아니면 sudo 로 재시작(sudoers NOPASSWD 필요).
+SUDO=""; [ "$(id -u)" = 0 ] || SUDO="sudo"
 
 echo "▶ 배포 시작: $APP_DIR (branch=$BRANCH)"
 cd "$APP_DIR"
@@ -34,10 +38,10 @@ echo "▶ 봇 의존성"
 echo "▶ 대시보드 의존성"
 "$WEB_VENV/bin/pip" install -q -r dashboard/requirements.txt
 
-# 3) 재시작 (sudoers NOPASSWD 필요 — provision.sh가 설정)
+# 3) 재시작 (비-root 로 배포 시 sudoers NOPASSWD 필요 — provision.sh가 설정)
 echo "▶ 서비스 재시작"
-sudo systemctl restart "$BOT_SERVICE"
-sudo systemctl restart "$WEB_SERVICE"
+$SUDO systemctl restart "$BOT_SERVICE"
+$SUDO systemctl restart "$WEB_SERVICE"
 sleep 2
 
 # 4) 검증: 두 서비스 active + 대시보드 헬스체크
