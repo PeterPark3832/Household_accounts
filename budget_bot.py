@@ -1271,10 +1271,12 @@ async def scheduled_weekly(app: Application):
         try:
             uid  = int(u["user_id"])
             name = u["display_name"]
+            # 날짜 범위로 조회한다. 예전에는 (월, 시작일, 종료일) 방식이라
+            # 1/28~2/3 처럼 달을 걸치는 주에는 조건이 성립하지 않아
+            # 빈 리포트가 나갔다.
             recs = await run_sync(
-                sheets.get_records_for_week,
-                week_start.year, week_start.month,
-                week_start.day, week_end.day, uid,
+                sheets.get_records_in_range,
+                week_start.date(), week_end.date(), uid,
             )
             total_in = sheets.monthly_total(recs, "income")
             total_ex = sheets.monthly_total(recs, "expense")

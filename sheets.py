@@ -7,12 +7,13 @@ sheets.py — Google Sheets CRUD 레이어
 """
 
 import os
+import calendar
 import re
 import time
 import threading
 import uuid
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -241,7 +242,24 @@ def _set_budgets_cache(user_id: int, year: int, month: int, data: dict[str, floa
         _budgets_cache[(str(user_id), year, month)] = (data, time.monotonic())
 
 
+# (연,월) 별 '예산 시트 전체 로드' 시각. 신선하면 캐시에 없는 사용자는
+# 예산이 없는 것으로 단정할 수 있어 재조회가 필요 없다.
+_budgets_full_load: dict[tuple[int, int], float] = {}
+
+
+def _budgets_full_load_is_fresh(year: int, month: int) -> bool:
+    with _cache_lock:
+        ts = _budgets_full_load.get((year, month), 0.0)
+    return (time.monotonic() - ts) < _BUDGETS_TTL
+
+
 def _invalidate_budgets_cache(user_id: int | None = None):
+    with _cache_lock:
+        _budgets_full_load.clear()
+    return _invalidate_budgets_cache_entries(user_id)
+
+
+def _invalidate_budgets_cache_entries(user_id: int | None = None):
     with _cache_lock:
         if user_id is None:
             _budgets_cache.clear()
@@ -408,6 +426,7 @@ def get_recent_records(user_id: int | None = None, limit: int = 10) -> list[dict
 # 봇이 쓰는 형식은 'YYYY-MM-DD HH:MM' 이지만, 시트를 사람이 직접 편집하면
 # '2026-1-5', '2026/01/05', '2026. 1. 5' 같은 변형이 섞여 들어온다.
 _DATE_PREFIX_RE = re.compile(r"^\s*(\d{4})\s*[-./]\s*(\d{1,2})")
+_DATE_FULL_RE   = re.compile(r"^\s*(\d{4})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})")
 
 
 def _month_of(row: dict) -> tuple[int, int] | None:
@@ -484,26 +503,55 @@ def get_records_for_months(
     return {k: list(v) for k, v in result.items()}
 
 
+def _date_of(row: dict) -> date | None:
+    """기록 행의 date 에서 날짜(연·월·일) 추출. 인식할 수 없으면 None."""
+    m = _DATE_FULL_RE.match(str(row.get("date", "")))
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:      # 2026-02-31 같은 존재하지 않는 날짜
+        return None
+
+
+def get_records_in_range(
+    start: date, end: date, user_id: int | None = None
+) -> list[dict]:
+    """[start, end] 기간의 기록을 반환합니다 (양끝 포함).
+
+    달 경계를 넘는 기간도 정확히 처리하며, 월 캐시를 재사용하므로
+    사용자마다 시트를 다시 내려받지 않습니다.
+    """
+    if end < start:
+        start, end = end, start
+    months: list[tuple[int, int]] = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        months.append((y, m))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+
+    grouped = get_records_for_months(months, user_id)
+    result: list[dict] = []
+    for key in months:
+        for r in grouped.get(key, []):
+            d = _date_of(r)
+            if d is not None and start <= d <= end:
+                result.append(r)
+    return result
+
+
 def get_records_for_week(
     year: int, month: int, day_start: int, day_end: int,
     user_id: int | None = None,
 ) -> list[dict]:
-    prefix = f"{year}-{month:02d}"
-    ws = get_sheet("records")
-    all_rows = _safe_get_records(ws)
-    result = []
-    for r in all_rows:
-        d = str(r["date"])
-        if not d.startswith(prefix):
-            continue
-        try:
-            if day_start <= int(d[8:10]) <= day_end:
-                result.append(r)
-        except (ValueError, IndexError):
-            continue
-    if user_id is not None:
-        result = [r for r in result if str(r["user_id"]) == str(user_id)]
-    return result
+    """한 달 안의 [day_start, day_end] 구간 기록.
+
+    달을 넘나드는 기간에는 get_records_in_range() 를 쓰세요.
+    """
+    last_day = calendar.monthrange(year, month)[1]
+    start = date(year, month, max(1, min(day_start, last_day)))
+    end   = date(year, month, max(1, min(day_end, last_day)))
+    return get_records_in_range(start, end, user_id)
 
 
 def get_all_records_for_user(user_id: int) -> list[dict]:
@@ -579,16 +627,28 @@ def get_all_budgets_for_month(user_id: int, year: int, month: int) -> dict[str, 
     cached = _get_budgets_from_cache(user_id, year, month)
     if cached is not None:
         return cached
+    if _budgets_full_load_is_fresh(year, month):
+        # 방금 전체를 받아왔는데 이 사용자가 없었다 = 예산 미설정. 재조회 불필요.
+        _set_budgets_cache(user_id, year, month, {})
+        return {}
+
+    # 어차피 예산 시트 전체를 받아오므로, 그 김에 모든 사용자의 캐시를 채운다.
+    # (자동 리포트가 가족 구성원마다 시트를 다시 내려받던 문제를 없앤다)
     ws = get_sheet("budgets")
-    result = {}
-    for row in _safe_get_records(ws):
-        if (
-            str(row["user_id"]) == str(user_id)
-            and str(row["year"]) == str(year)
-            and str(row["month"]) == str(month)
-        ):
-            result[row["category"]] = to_number(row.get("amount"))
-    _set_budgets_cache(user_id, year, month, result)
+    per_user: dict[str, dict[str, float]] = {}
+    for row in _safe_get_records(ws) or []:
+        if str(row.get("year")) == str(year) and str(row.get("month")) == str(month):
+            uid = str(row.get("user_id"))
+            per_user.setdefault(uid, {})[row.get("category")] = to_number(row.get("amount"))
+    for uid, budgets in per_user.items():
+        _set_budgets_cache(uid, year, month, budgets)
+    with _cache_lock:
+        _budgets_full_load[(year, month)] = time.monotonic()
+
+    result = per_user.get(str(user_id), {})
+    if str(user_id) not in per_user:
+        # 예산이 없는 사용자도 캐시에 남겨 매번 재조회하지 않도록 한다.
+        _set_budgets_cache(user_id, year, month, {})
     return dict(result)
 
 
