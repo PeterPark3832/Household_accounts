@@ -11,10 +11,12 @@ import calendar
 import csv
 import functools
 import io
+import json
 import logging
 import logging.handlers
 import os
 import re
+import urllib.error
 import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta
@@ -66,17 +68,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# 대시보드는 Basic 인증에서 Bearer 토큰 방식으로 바뀌었다. 발급받은 토큰을
+# 재사용하고, 만료(401)되면 한 번만 재발급해서 다시 시도한다.
+_dash_token: str | None = None
+
+
+def _dash_request(path: str, *, token: str | None = None,
+                  headers: dict | None = None, payload: dict | None = None) -> dict:
+    req = urllib.request.Request(f"{DASHBOARD_URL}{path}", method="POST")
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    with urllib.request.urlopen(req, data, timeout=3) as resp:
+        body = resp.read()
+    return json.loads(body) if body else {}
+
+
+def _clear_dashboard_cache_sync() -> None:
+    """토큰을 확보해 대시보드 캐시를 비웁니다 (401 시 1회 재발급)."""
+    global _dash_token
+    for attempt in (1, 2):
+        try:
+            if not _dash_token:
+                _dash_token = _dash_request("/api/auth",
+                                            payload={"password": DASHBOARD_PASS})["token"]
+            _dash_request("/api/cache/clear", token=_dash_token,
+                          headers={"X-Dashboard-Clear": "1"})   # CSRF 방어 헤더
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 1:
+                _dash_token = None      # 토큰 만료 → 재발급 후 한 번 더
+                continue
+            raise
+
+
 async def _clear_dashboard_cache() -> None:
     """기록 후 대시보드 응답 캐시를 무효화합니다 (fire-and-forget)."""
     if not DASHBOARD_URL or not DASHBOARD_PASS:
         return
-    url = f"{DASHBOARD_URL}/api/cache/clear"
-    creds = base64.b64encode(f"{DASHBOARD_USER}:{DASHBOARD_PASS}".encode()).decode()
     try:
-        req = urllib.request.Request(url, method="POST")
-        req.add_header("Authorization", f"Basic {creds}")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=3))
+        await run_sync(_clear_dashboard_cache_sync)
         logger.info("Dashboard cache cleared")
     except Exception as e:
         logger.warning("Dashboard cache clear failed: %s", e)
