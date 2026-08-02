@@ -633,5 +633,7 @@ async def clear_cache(x_clear: str | None = Header(None, alias="X-Dashboard-Clea
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("DASHBOARD_PORT", 8080))
+    # 기본값 8081 — 배포 서버의 8080 은 다른 서비스가 사용 중이다.
+    # (systemd 유닛은 --port 로 명시하므로 그쪽이 우선한다)
+    port = int(os.environ.get("DASHBOARD_PORT", 8081))
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)

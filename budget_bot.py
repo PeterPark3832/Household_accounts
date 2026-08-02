@@ -6,7 +6,6 @@
 """
 
 import asyncio
-import base64
 import calendar
 import csv
 import functools
@@ -51,7 +50,6 @@ load_dotenv()
 BOT_TOKEN      = os.getenv("BUDGET_BOT_TOKEN")
 ADMIN_ID       = int(os.getenv("ADMIN_USER_ID", "0"))
 DASHBOARD_URL  = os.getenv("DASHBOARD_URL", "").rstrip("/")
-DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "")
 KST            = ZoneInfo("Asia/Seoul")
 
