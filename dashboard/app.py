@@ -102,15 +102,35 @@ def _client_ip(request: Request) -> str:
     xff = request.headers.get("X-Forwarded-For", "")
     return xff.split(",")[0].strip() or (request.client.host if request.client else "unknown")
 
+_AUTH_MAX_TRACKED_IPS = 10_000   # IP 로테이션 공격으로 인한 무한 증가 차단
+
 def _is_rate_limited(ip: str) -> bool:
     now = _time.time()
     window_start = now - _AUTH_WINDOW_SEC
     # Prune old entries in-place
-    _fail_log[ip] = [t for t in _fail_log[ip] if t > window_start]
-    return len(_fail_log[ip]) >= _AUTH_MAX_FAILS
+    fresh = [t for t in _fail_log[ip] if t > window_start]
+    if fresh:
+        _fail_log[ip] = fresh
+    else:
+        _fail_log.pop(ip, None)   # 만료된 IP 항목은 제거 (메모리 누수 방지)
+    return len(fresh) >= _AUTH_MAX_FAILS
+
+def _prune_fail_log(now: float) -> None:
+    """창을 벗어난 IP 항목을 정리. 그래도 넘치면 오래된 것부터 버린다."""
+    window_start = now - _AUTH_WINDOW_SEC
+    for ip in [k for k, v in _fail_log.items() if not any(t > window_start for t in v)]:
+        _fail_log.pop(ip, None)
+    if len(_fail_log) > _AUTH_MAX_TRACKED_IPS:
+        for ip in sorted(_fail_log, key=lambda k: max(_fail_log[k], default=0))[
+            : len(_fail_log) - _AUTH_MAX_TRACKED_IPS
+        ]:
+            _fail_log.pop(ip, None)
 
 def _record_fail(ip: str) -> None:
-    _fail_log[ip].append(_time.time())
+    now = _time.time()
+    _fail_log[ip].append(now)
+    if len(_fail_log) > _AUTH_MAX_TRACKED_IPS:
+        _prune_fail_log(now)
 
 
 # -- Token auth ----------------------------------------------------------------
@@ -283,17 +303,12 @@ async def api_trend(months: int = Query(6, ge=1, le=24)):
         total = now.year * 12 + (now.month - 1) - i
         month_keys.append((total // 12, total % 12 + 1))
 
-    async def safe_fetch(y, m):
-        try:
-            return await run_sync(sheets.get_records_for_month, y, m)
-        except Exception as e:
-            logger.warning("trend fetch %d-%02d failed: %s", y, m, e)
-            return []
-
     try:
-        all_recs = await asyncio.gather(*[safe_fetch(y, m) for y, m in month_keys])
+        # 시트 조회 1회로 전체 월을 가져온다 (기존: 월마다 시트 전체 다운로드)
+        grouped = await run_sync(sheets.get_records_for_months, month_keys)
         result = []
-        for (y, m), recs in zip(month_keys, all_recs):
+        for (y, m) in month_keys:
+            recs = grouped.get((y, m), [])
             inc = sheets.monthly_total(recs, "income")
             exp = sheets.monthly_total(recs, "expense")
             result.append({
@@ -374,8 +389,9 @@ async def api_transactions(
     month = month or now.month
     try:
         records = await run_sync(sheets.get_records_for_month, year, month)
-        records.sort(key=lambda x: x.get("date", ""), reverse=True)
-        return records[:limit]
+        # sorted() 로 새 리스트를 만든다. in-place sort 는 공유 캐시를 건드려
+        # 동시에 같은 달을 읽는 다른 요청과 경쟁 조건을 만든다.
+        return sorted(records, key=lambda x: x.get("date", ""), reverse=True)[:limit]
     except Exception as e:
         logger.error("api_transactions(%d, %d) failed: %s", year, month, e, exc_info=True)
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
@@ -407,14 +423,20 @@ async def api_budgets(
             user_id = target["user_id"] if target else None
         if not user_id:
             return []
+        try:
+            uid = int(str(user_id).strip())
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="user_id 는 숫자여야 합니다.")
 
         budgets, records = await asyncio.gather(
-            run_sync(sheets.get_all_budgets_for_month, int(user_id), year, month),
+            run_sync(sheets.get_all_budgets_for_month, uid, year, month),
             run_sync(sheets.get_records_for_month, year, month),
         )
         actuals = sheets.monthly_breakdown(records, "expense")
 
         return build_budget_report(budgets, actuals)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("api_budgets(%d, %d) failed: %s", year, month, e, exc_info=True)
         return JSONResponse(status_code=500, content={"error": "데이터를 불러오지 못했습니다."})
@@ -444,7 +466,14 @@ async def api_dashboard(year: int = Query(None), month: int = Query(None)):
 
         admins  = [u for u in users if u.get("role") == "admin"]
         target  = admins[0] if admins else (users[0] if users else None)
-        user_id = int(target["user_id"]) if target else None
+        # users 시트도 사람이 편집하므로 user_id 가 숫자가 아닐 수 있다.
+        # 예산 조회만 건너뛰고 나머지 대시보드는 정상 제공한다.
+        user_id = None
+        if target:
+            try:
+                user_id = int(str(target.get("user_id", "")).strip())
+            except (TypeError, ValueError):
+                logger.warning("users 시트의 user_id 가 숫자가 아닙니다: %r", target.get("user_id"))
 
         budgets_raw = await run_sync(sheets.get_all_budgets_for_month, user_id, year, month) \
                       if user_id else {}
@@ -503,17 +532,14 @@ async def api_annual(year: int = Query(None)):
         return _annual_cache[year]
     logger.info("annual cache MISS %d -- fetching 12 months", year)
 
-    async def safe_fetch(m):
-        try:
-            return await run_sync(sheets.get_records_for_month, year, m)
-        except Exception as e:
-            logger.warning("annual fetch %d-%02d failed: %s", year, m, e)
-            return []
-
     try:
-        all_recs = await asyncio.gather(*[safe_fetch(m) for m in range(1, 13)])
+        # 12개월치를 시트 조회 1회로 가져온다 (기존: 12회 전체 다운로드)
+        grouped = await run_sync(
+            sheets.get_records_for_months, [(year, m) for m in range(1, 13)]
+        )
         result = []
-        for m, recs in enumerate(all_recs, 1):
+        for m in range(1, 13):
+            recs = grouped.get((year, m), [])
             inc = sheets.monthly_total(recs, "income")
             exp = sheets.monthly_total(recs, "expense")
             result.append({

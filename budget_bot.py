@@ -199,7 +199,7 @@ def _build_csv_bytes(records: list[dict]) -> bytes:
             r["id"],
             "수입" if r["type"] == "income" else "지출",
             r["category"],
-            int(float(r["amount"])),
+            int(sheets.to_number(r["amount"])),
             r.get("memo", ""),
             str(r["date"]),
         ])
@@ -497,7 +497,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    amounts        = [float(r["amount"]) for r in expenses]
+    amounts        = [sheets.to_number(r["amount"]) for r in expenses]
     total_ex       = sum(amounts)
     days_passed    = now.day
     days_in_month  = calendar.monthrange(now.year, now.month)[1]
@@ -505,7 +505,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avg_daily      = total_ex / days_passed
     projected_eom  = avg_daily * days_in_month  # 이 속도면 월말 예상
 
-    max_r      = max(expenses, key=lambda r: float(r["amount"]))
+    max_r      = max(expenses, key=lambda r: sheets.to_number(r["amount"]))
     cat_counts = Counter(r["category"] for r in expenses)
     top_cat, top_cnt = cat_counts.most_common(1)[0]
     top_emoji  = EXPENSE_CATEGORIES.get(top_cat, "💸")
@@ -529,7 +529,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 *일평균 지출:* {fmt(avg_daily)}\n"
         f"🔮 *이 속도면 월말 예상:* {fmt(projected_eom)}\n\n"
         f"🏆 *최대 단건*\n"
-        f"  {max_emoji} {max_r['category']} — *{fmt(float(max_r['amount']))}*\n"
+        f"  {max_emoji} {max_r['category']} — *{fmt(sheets.to_number(max_r['amount']))}*\n"
         f"  {str(max_r['date'])[:10]} | {max_r.get('memo') or '메모 없음'}\n\n"
         f"🔁 *가장 잦은 지출:* {top_emoji} {top_cat} ({top_cnt}회)"
     )
@@ -942,12 +942,12 @@ async def on_chart_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return y, rem + 1
 
             month_params = [_month_info(d) for d in range(5, -1, -1)]
-            all_recs = await asyncio.gather(
-                *[run_sync(sheets.get_records_for_month, y, m, uid) for y, m in month_params]
-            )
+            # 시트 조회 1회로 6개월치를 모두 가져온다 (기존: 월마다 전체 다운로드 6회)
+            grouped = await run_sync(sheets.get_records_for_months, month_params, uid)
             months, incomes, expenses = [], [], []
             prev_year = None
-            for (y, m), recs in zip(month_params, all_recs):
+            for (y, m) in month_params:
+                recs = grouped.get((y, m), [])
                 label = f"{m}월" if (prev_year is None or y == prev_year) else f"{y}.{m}월"
                 prev_year = y
                 months.append(label)
@@ -990,7 +990,7 @@ async def recent_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji = cats.get(r["category"], "")
         icon  = "➕" if r["type"] == "income" else "➖"
         dt    = str(r["date"])[:10]
-        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(float(r['amount']))}*"
+        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(sheets.to_number(r['amount']))}*"
         if r.get("memo"):
             lines += f" _{r['memo']}_"
         lines += f" `[{r['id']}]`\n"
@@ -1104,7 +1104,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji = cats.get(r["category"], "")
         icon  = "➕" if r["type"] == "income" else "➖"
         dt    = str(r["date"])[:10]
-        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(float(r['amount']))}*"
+        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(sheets.to_number(r['amount']))}*"
         if r.get("memo"):
             lines += f" _{r['memo']}_"
         lines += f" `[{r['id']}]`\n"
