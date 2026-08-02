@@ -6,15 +6,16 @@
 """
 
 import asyncio
-import base64
 import calendar
 import csv
 import functools
 import io
+import json
 import logging
 import logging.handlers
 import os
 import re
+import urllib.error
 import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta
@@ -49,7 +50,6 @@ load_dotenv()
 BOT_TOKEN      = os.getenv("BUDGET_BOT_TOKEN")
 ADMIN_ID       = int(os.getenv("ADMIN_USER_ID", "0"))
 DASHBOARD_URL  = os.getenv("DASHBOARD_URL", "").rstrip("/")
-DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "")
 KST            = ZoneInfo("Asia/Seoul")
 
@@ -66,17 +66,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# 대시보드는 Basic 인증에서 Bearer 토큰 방식으로 바뀌었다. 발급받은 토큰을
+# 재사용하고, 만료(401)되면 한 번만 재발급해서 다시 시도한다.
+_dash_token: str | None = None
+
+
+def _dash_request(path: str, *, token: str | None = None,
+                  headers: dict | None = None, payload: dict | None = None) -> dict:
+    req = urllib.request.Request(f"{DASHBOARD_URL}{path}", method="POST")
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    with urllib.request.urlopen(req, data, timeout=3) as resp:
+        body = resp.read()
+    return json.loads(body) if body else {}
+
+
+def _clear_dashboard_cache_sync() -> None:
+    """토큰을 확보해 대시보드 캐시를 비웁니다 (401 시 1회 재발급)."""
+    global _dash_token
+    for attempt in (1, 2):
+        try:
+            if not _dash_token:
+                _dash_token = _dash_request("/api/auth",
+                                            payload={"password": DASHBOARD_PASS})["token"]
+            _dash_request("/api/cache/clear", token=_dash_token,
+                          headers={"X-Dashboard-Clear": "1"})   # CSRF 방어 헤더
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 1:
+                _dash_token = None      # 토큰 만료 → 재발급 후 한 번 더
+                continue
+            raise
+
+
 async def _clear_dashboard_cache() -> None:
     """기록 후 대시보드 응답 캐시를 무효화합니다 (fire-and-forget)."""
     if not DASHBOARD_URL or not DASHBOARD_PASS:
         return
-    url = f"{DASHBOARD_URL}/api/cache/clear"
-    creds = base64.b64encode(f"{DASHBOARD_USER}:{DASHBOARD_PASS}".encode()).decode()
     try:
-        req = urllib.request.Request(url, method="POST")
-        req.add_header("Authorization", f"Basic {creds}")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=3))
+        await run_sync(_clear_dashboard_cache_sync)
         logger.info("Dashboard cache cleared")
     except Exception as e:
         logger.warning("Dashboard cache clear failed: %s", e)
@@ -199,7 +233,7 @@ def _build_csv_bytes(records: list[dict]) -> bytes:
             r["id"],
             "수입" if r["type"] == "income" else "지출",
             r["category"],
-            int(float(r["amount"])),
+            int(sheets.to_number(r["amount"])),
             r.get("memo", ""),
             str(r["date"]),
         ])
@@ -497,7 +531,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    amounts        = [float(r["amount"]) for r in expenses]
+    amounts        = [sheets.to_number(r["amount"]) for r in expenses]
     total_ex       = sum(amounts)
     days_passed    = now.day
     days_in_month  = calendar.monthrange(now.year, now.month)[1]
@@ -505,7 +539,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avg_daily      = total_ex / days_passed
     projected_eom  = avg_daily * days_in_month  # 이 속도면 월말 예상
 
-    max_r      = max(expenses, key=lambda r: float(r["amount"]))
+    max_r      = max(expenses, key=lambda r: sheets.to_number(r["amount"]))
     cat_counts = Counter(r["category"] for r in expenses)
     top_cat, top_cnt = cat_counts.most_common(1)[0]
     top_emoji  = EXPENSE_CATEGORIES.get(top_cat, "💸")
@@ -529,7 +563,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 *일평균 지출:* {fmt(avg_daily)}\n"
         f"🔮 *이 속도면 월말 예상:* {fmt(projected_eom)}\n\n"
         f"🏆 *최대 단건*\n"
-        f"  {max_emoji} {max_r['category']} — *{fmt(float(max_r['amount']))}*\n"
+        f"  {max_emoji} {max_r['category']} — *{fmt(sheets.to_number(max_r['amount']))}*\n"
         f"  {str(max_r['date'])[:10]} | {max_r.get('memo') or '메모 없음'}\n\n"
         f"🔁 *가장 잦은 지출:* {top_emoji} {top_cat} ({top_cnt}회)"
     )
@@ -942,12 +976,12 @@ async def on_chart_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return y, rem + 1
 
             month_params = [_month_info(d) for d in range(5, -1, -1)]
-            all_recs = await asyncio.gather(
-                *[run_sync(sheets.get_records_for_month, y, m, uid) for y, m in month_params]
-            )
+            # 시트 조회 1회로 6개월치를 모두 가져온다 (기존: 월마다 전체 다운로드 6회)
+            grouped = await run_sync(sheets.get_records_for_months, month_params, uid)
             months, incomes, expenses = [], [], []
             prev_year = None
-            for (y, m), recs in zip(month_params, all_recs):
+            for (y, m) in month_params:
+                recs = grouped.get((y, m), [])
                 label = f"{m}월" if (prev_year is None or y == prev_year) else f"{y}.{m}월"
                 prev_year = y
                 months.append(label)
@@ -990,7 +1024,7 @@ async def recent_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji = cats.get(r["category"], "")
         icon  = "➕" if r["type"] == "income" else "➖"
         dt    = str(r["date"])[:10]
-        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(float(r['amount']))}*"
+        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(sheets.to_number(r['amount']))}*"
         if r.get("memo"):
             lines += f" _{r['memo']}_"
         lines += f" `[{r['id']}]`\n"
@@ -1104,7 +1138,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji = cats.get(r["category"], "")
         icon  = "➕" if r["type"] == "income" else "➖"
         dt    = str(r["date"])[:10]
-        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(float(r['amount']))}*"
+        lines += f"{icon} {dt} {emoji}{r['category']} *{fmt(sheets.to_number(r['amount']))}*"
         if r.get("memo"):
             lines += f" _{r['memo']}_"
         lines += f" `[{r['id']}]`\n"
@@ -1271,10 +1305,12 @@ async def scheduled_weekly(app: Application):
         try:
             uid  = int(u["user_id"])
             name = u["display_name"]
+            # 날짜 범위로 조회한다. 예전에는 (월, 시작일, 종료일) 방식이라
+            # 1/28~2/3 처럼 달을 걸치는 주에는 조건이 성립하지 않아
+            # 빈 리포트가 나갔다.
             recs = await run_sync(
-                sheets.get_records_for_week,
-                week_start.year, week_start.month,
-                week_start.day, week_end.day, uid,
+                sheets.get_records_in_range,
+                week_start.date(), week_end.date(), uid,
             )
             total_in = sheets.monthly_total(recs, "income")
             total_ex = sheets.monthly_total(recs, "expense")

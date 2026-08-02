@@ -148,6 +148,10 @@ def patch_sheets(monkeypatch):
     """Replace all sheets.* calls with deterministic stubs for every test."""
     import sheets as _sheets
     monkeypatch.setattr(_sheets, "get_records_for_month",  lambda *a, **kw: list(_SAMPLE_RECORDS))
+    monkeypatch.setattr(
+        _sheets, "get_records_for_months",
+        lambda months, user_id=None: {k: list(_SAMPLE_RECORDS) for k in months},
+    )
     monkeypatch.setattr(_sheets, "get_all_users",          lambda *a, **kw: list(_SAMPLE_USERS))
     monkeypatch.setattr(_sheets, "get_all_budgets_for_month", lambda *a, **kw: {"식비": 100_000})
     monkeypatch.setattr(_sheets, "monthly_total",          _sheets.__dict__["monthly_total"])
@@ -429,3 +433,161 @@ async def test_update_transaction_requires_auth():
     async with AsyncClient(transport=_transport(), base_url=BASE) as client:
         r = await client.patch("/api/transactions/AABBCCDD", json={"memo": "변경"})
     assert r.status_code == 401
+
+
+# ── 연간/트렌드: 월별 조회가 일괄 1회로 묶였는지 ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_annual_uses_single_grouped_fetch(monkeypatch):
+    """연간 요약이 월별 개별 조회가 아니라 일괄 조회 1회를 써야 한다."""
+    import sheets as _sheets
+    calls = {"grouped": 0, "per_month": 0}
+
+    def _grouped(months, user_id=None):
+        calls["grouped"] += 1
+        return {k: list(_SAMPLE_RECORDS) for k in months}
+
+    def _per_month(*a, **kw):
+        calls["per_month"] += 1
+        return list(_SAMPLE_RECORDS)
+
+    monkeypatch.setattr(_sheets, "get_records_for_months", _grouped)
+    monkeypatch.setattr(_sheets, "get_records_for_month", _per_month)
+
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/annual", params={"year": 2024})
+
+    assert r.status_code == 200
+    assert len(r.json()) == 12
+    assert calls["grouped"] == 1
+    assert calls["per_month"] == 0, "연간 요약이 아직 월별로 개별 조회하고 있습니다"
+
+
+@pytest.mark.asyncio
+async def test_annual_values(monkeypatch):
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/annual", params={"year": 2024})
+    body = r.json()
+    assert body[0]["month"] == 1 and body[0]["label"] == "1월"
+    assert body[0]["income"] == 500_000
+    assert body[0]["expense"] == 45_000
+    assert body[0]["net"] == 455_000
+
+
+@pytest.mark.asyncio
+async def test_trend_uses_single_grouped_fetch(monkeypatch):
+    import sheets as _sheets
+    calls = {"grouped": 0, "per_month": 0}
+    monkeypatch.setattr(_sheets, "get_records_for_months",
+                        lambda months, user_id=None: (calls.__setitem__("grouped", calls["grouped"] + 1),
+                                                      {k: list(_SAMPLE_RECORDS) for k in months})[1])
+    monkeypatch.setattr(_sheets, "get_records_for_month",
+                        lambda *a, **kw: (calls.__setitem__("per_month", calls["per_month"] + 1),
+                                          list(_SAMPLE_RECORDS))[1])
+
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/trend", params={"months": 6})
+
+    assert r.status_code == 200
+    assert len(r.json()) == 6
+    assert calls["grouped"] == 1
+    assert calls["per_month"] == 0
+
+
+# ── 시트에 이상 데이터가 있어도 대시보드가 죽지 않아야 한다 ────────────────────
+
+_DIRTY_RECORDS = [
+    {"type": "income",  "category": "급여", "amount": 500_000, "display_name": "홍길동", "date": "2024-06-01"},
+    {"type": "expense", "category": "식비", "amount": "",       "display_name": "홍길동", "date": "2024-06-02"},
+    {"type": "expense", "category": "쇼핑", "amount": "삼만원",  "display_name": "홍길동", "date": "2024-06-03"},
+    {"type": "expense", "category": "교통비", "amount": "15,000", "display_name": "홍길동", "date": "2024-06-04"},
+]
+
+
+@pytest.mark.asyncio
+async def test_summary_survives_malformed_amounts(monkeypatch):
+    """금액 칸이 비었거나 문자인 행이 있어도 500이 나면 안 된다."""
+    import sheets as _sheets
+    monkeypatch.setattr(_sheets, "get_records_for_month", lambda *a, **kw: list(_DIRTY_RECORDS))
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/summary", params={"year": 2024, "month": 6})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["income"] == 500_000
+    assert body["expense"] == 15_000        # 빈칸·문자는 0 으로 처리
+    assert body["transaction_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_dashboard_survives_malformed_amounts(monkeypatch):
+    import sheets as _sheets
+    monkeypatch.setattr(_sheets, "get_records_for_month", lambda *a, **kw: list(_DIRTY_RECORDS))
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/dashboard", params={"year": 2024, "month": 6})
+    assert r.status_code == 200
+    assert r.json()["summary"]["expense"] == 15_000
+
+
+@pytest.mark.asyncio
+async def test_dashboard_survives_non_numeric_user_id(monkeypatch):
+    """users 시트의 user_id 가 숫자가 아니어도 대시보드는 떠야 한다."""
+    import sheets as _sheets
+    monkeypatch.setattr(_sheets, "get_all_users",
+                        lambda *a, **kw: [{"user_id": "관리자", "display_name": "홍길동", "role": "admin"}])
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/dashboard", params={"year": 2024, "month": 6})
+    assert r.status_code == 200
+    assert r.json()["summary"]["income"] == 500_000
+
+
+# ── 입력 검증 ─────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_budgets_rejects_non_numeric_user_id():
+    """잘못된 user_id 는 500(서버 오류)이 아니라 400(잘못된 요청)이어야 한다."""
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/budgets", params={"user_id": "abc", "year": 2024, "month": 6})
+    assert r.status_code == 400
+
+
+# ── /api/transactions 가 공유 캐시를 변형하지 않아야 한다 ──────────────────────
+
+@pytest.mark.asyncio
+async def test_transactions_does_not_mutate_shared_records(monkeypatch):
+    import sheets as _sheets
+    shared = list(_SAMPLE_RECORDS)          # 캐시가 돌려주는 바로 그 리스트를 흉내
+    original = [r["date"] for r in shared]
+    monkeypatch.setattr(_sheets, "get_records_for_month", lambda *a, **kw: shared)
+
+    async with AsyncClient(transport=_transport(), base_url=BASE, headers=GOOD_HDRS) as client:
+        r = await client.get("/api/transactions", params={"year": 2024, "month": 6})
+
+    assert r.status_code == 200
+    assert [rec["date"] for rec in r.json()] == sorted(original, reverse=True)
+    assert [rec["date"] for rec in shared] == original, "공유 리스트가 정렬돼 버렸습니다"
+
+
+# ── 인증 실패 로그가 무한히 쌓이지 않아야 한다 ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_fail_log_does_not_grow_unbounded():
+    """IP 를 바꿔가며 실패해도 추적 항목 수에 상한이 있어야 한다."""
+    cap = dashboard_app._AUTH_MAX_TRACKED_IPS
+    dashboard_app._fail_log.clear()
+    stale = _time.time() - dashboard_app._AUTH_WINDOW_SEC - 10
+    for i in range(cap + 500):
+        dashboard_app._fail_log[f"10.0.{i // 256}.{i % 256}"].append(stale)
+    dashboard_app._record_fail("10.9.9.9")          # 정리 트리거
+    assert len(dashboard_app._fail_log) <= cap
+    dashboard_app._fail_log.clear()
+
+
+@pytest.mark.asyncio
+async def test_expired_ip_entry_is_dropped():
+    dashboard_app._fail_log.clear()
+    dashboard_app._fail_log["1.2.3.4"].append(
+        _time.time() - dashboard_app._AUTH_WINDOW_SEC - 5
+    )
+    assert dashboard_app._is_rate_limited("1.2.3.4") is False
+    assert "1.2.3.4" not in dashboard_app._fail_log
+    dashboard_app._fail_log.clear()

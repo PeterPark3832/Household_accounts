@@ -7,11 +7,13 @@ sheets.py — Google Sheets CRUD 레이어
 """
 
 import os
+import calendar
+import re
 import time
 import threading
 import uuid
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -31,6 +33,8 @@ _client: gspread.Client | None = None
 _spreadsheet: gspread.Spreadsheet | None = None
 _spreadsheet_lock = threading.Lock()
 _cache_lock        = threading.Lock()
+# 시트 전체 다운로드를 한 번에 하나만 수행하기 위한 잠금 (thundering herd 방지)
+_records_load_lock = threading.Lock()
 
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
 
@@ -72,6 +76,39 @@ def _safe_get_records(ws: gspread.Worksheet) -> list[dict]:
                 time.sleep(wait)
             else:
                 raise
+
+
+# ── 값 변환 헬퍼 ───────────────────────────────────────────────────
+def to_number(value) -> float:
+    """시트 셀 값을 float 로 변환합니다. 변환 불가 시 0.0.
+
+    시트는 사람이 직접 편집하므로 금액 칸이 비어 있거나("") 사람이 "3만원",
+    "1,200 원" 처럼 적어 넣는 일이 실제로 발생합니다. 예전에는 그런 행 하나가
+    float() ValueError 로 번져 대시보드/봇 전체가 500 이 됐습니다. 한 행의
+    오류가 전체를 마비시키지 않도록 0 으로 처리하고 경고만 남깁니다.
+    """
+    if isinstance(value, bool):          # bool 은 int 의 서브클래스라 먼저 걸러냄
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value if value is not None else "").strip()
+    if not s:
+        return 0.0
+    cleaned = s.replace(",", "").replace("₩", "").replace("원", "").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        logger.warning("금액으로 변환할 수 없는 셀 값 %r → 0 으로 처리합니다.", value)
+        return 0.0
+
+
+def _col_letter(index: int) -> str:
+    """1-기반 컬럼 번호 → A1 표기 컬럼 문자 (1→A, 27→AA)."""
+    letters = ""
+    while index > 0:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(ord("A") + rem) + letters
+    return letters
 
 
 # ── 시트 초기화 ────────────────────────────────────────────────────
@@ -118,8 +155,10 @@ _EXPAND_ADD_ROWS    = 1000
 def _maybe_expand_sheet(ws: gspread.Worksheet):
     """50회 삽입마다 여유 행을 확인하고, 200행 미만이면 1000행 자동 추가합니다."""
     global _insert_call_count
-    _insert_call_count += 1
-    if _insert_call_count % _EXPAND_CHECK_EVERY != 0:
+    with _cache_lock:
+        _insert_call_count += 1
+        due = _insert_call_count % _EXPAND_CHECK_EVERY == 0
+    if not due:
         return
     try:
         used = len(ws.col_values(1))          # 헤더 포함 사용 중인 행
@@ -168,9 +207,21 @@ def _set_records_cache(year: int, month: int, data: list[dict]):
         _records_cache[(year, month)] = (data, time.monotonic())
 
 
+# 마지막 '시트 전체 로드' 시각. 전체 로드 결과는 모든 달에 대한 진실이므로,
+# 이 값이 신선하면 "캐시에 없는 달 = 데이터가 없는 달" 로 단정할 수 있다.
+_records_full_load_ts: float = 0.0
+
+
+def _full_load_is_fresh() -> bool:
+    with _cache_lock:
+        return (time.monotonic() - _records_full_load_ts) < _RECORDS_TTL
+
+
 def _invalidate_records_cache():
+    global _records_full_load_ts
     with _cache_lock:
         _records_cache.clear()
+        _records_full_load_ts = 0.0
 
 
 # ── TTL 캐시 — budgets (2분, 유저×연월 키) ────────────────────────
@@ -182,7 +233,7 @@ def _get_budgets_from_cache(user_id: int, year: int, month: int) -> dict[str, fl
     with _cache_lock:
         entry = _budgets_cache.get((str(user_id), year, month))
         if entry and (time.monotonic() - entry[1]) < _BUDGETS_TTL:
-            return entry[0]
+            return dict(entry[0])   # 캐시 원본 보호
     return None
 
 
@@ -191,7 +242,24 @@ def _set_budgets_cache(user_id: int, year: int, month: int, data: dict[str, floa
         _budgets_cache[(str(user_id), year, month)] = (data, time.monotonic())
 
 
+# (연,월) 별 '예산 시트 전체 로드' 시각. 신선하면 캐시에 없는 사용자는
+# 예산이 없는 것으로 단정할 수 있어 재조회가 필요 없다.
+_budgets_full_load: dict[tuple[int, int], float] = {}
+
+
+def _budgets_full_load_is_fresh(year: int, month: int) -> bool:
+    with _cache_lock:
+        ts = _budgets_full_load.get((year, month), 0.0)
+    return (time.monotonic() - ts) < _BUDGETS_TTL
+
+
 def _invalidate_budgets_cache(user_id: int | None = None):
+    with _cache_lock:
+        _budgets_full_load.clear()
+    return _invalidate_budgets_cache_entries(user_id)
+
+
+def _invalidate_budgets_cache_entries(user_id: int | None = None):
     with _cache_lock:
         if user_id is None:
             _budgets_cache.clear()
@@ -206,13 +274,13 @@ def get_all_users() -> list[dict]:
     global _users_cache, _users_cache_ts
     with _cache_lock:
         if _users_cache is not None and (time.monotonic() - _users_cache_ts) < _USERS_TTL:
-            return _users_cache
+            return list(_users_cache)   # 캐시 원본이 밖에서 변형되지 않도록 복사
     # I/O는 락 밖에서 실행
-    rows = _safe_get_records(get_sheet("users"))
+    rows = _safe_get_records(get_sheet("users")) or []
     with _cache_lock:
         _users_cache = rows
         _users_cache_ts = time.monotonic()
-    return rows
+    return list(rows)
 
 
 def find_user(user_id: int) -> dict | None:
@@ -324,12 +392,24 @@ def update_record_by_id(rec_id: str, fields: dict) -> bool:
     invalid = set(fields.keys()) - set(EDITABLE_RECORD_FIELDS.keys())
     if invalid:
         raise ValueError(f"수정 불가 필드: {invalid}")
+    if not fields:
+        return False
     ws = get_sheet("records")
     records = _safe_get_records(ws)
     for i, row in enumerate(records, start=2):
         if row["id"] == rec_id:
-            for field, value in fields.items():
-                ws.update_cell(i, EDITABLE_RECORD_FIELDS[field], value)
+            # 필드마다 update_cell 을 부르면 3필드 수정 = API 왕복 3회였다.
+            # batch_update 로 묶어 1회로 줄인다.
+            ws.batch_update(
+                [
+                    {
+                        "range": f"{_col_letter(EDITABLE_RECORD_FIELDS[f])}{i}",
+                        "values": [[v]],
+                    }
+                    for f, v in fields.items()
+                ],
+                value_input_option="USER_ENTERED",
+            )
             _invalidate_records_cache()
             return True
     return False
@@ -343,39 +423,135 @@ def get_recent_records(user_id: int | None = None, limit: int = 10) -> list[dict
     return all_rows[-limit:][::-1]
 
 
+# 봇이 쓰는 형식은 'YYYY-MM-DD HH:MM' 이지만, 시트를 사람이 직접 편집하면
+# '2026-1-5', '2026/01/05', '2026. 1. 5' 같은 변형이 섞여 들어온다.
+_DATE_PREFIX_RE = re.compile(r"^\s*(\d{4})\s*[-./]\s*(\d{1,2})")
+_DATE_FULL_RE   = re.compile(r"^\s*(\d{4})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})")
+
+
+def _month_of(row: dict) -> tuple[int, int] | None:
+    """기록 행의 date 에서 (연, 월) 추출. 인식할 수 없으면 None."""
+    m = _DATE_PREFIX_RE.match(str(row.get("date", "")))
+    if not m:
+        return None
+    year, month = int(m.group(1)), int(m.group(2))
+    if not 1 <= month <= 12:
+        return None
+    return year, month
+
+
 def get_records_for_month(year: int, month: int, user_id: int | None = None) -> list[dict]:
-    prefix = f"{year}-{month:02d}"
-    cached = _get_records_from_cache(year, month)
-    if cached is None:
-        ws = get_sheet("records")
-        all_rows = _safe_get_records(ws)
-        cached = [r for r in all_rows if str(r["date"]).startswith(prefix)]
-        _set_records_cache(year, month, cached)
+    return get_records_for_months([(year, month)], user_id)[(year, month)]
+
+
+def _load_all_months() -> dict[tuple[int, int], list[dict]]:
+    """시트를 한 번만 읽어 모든 월로 버킷팅하고, 각 월 캐시를 채웁니다."""
+    global _records_full_load_ts
+    ws = get_sheet("records")
+    all_rows = _safe_get_records(ws) or []
+    grouped: dict[tuple[int, int], list[dict]] = {}
+    for row in all_rows:
+        key = _month_of(row)
+        if key is not None:
+            grouped.setdefault(key, []).append(row)
+    for key, rows in grouped.items():
+        _set_records_cache(key[0], key[1], rows)
+    with _cache_lock:
+        _records_full_load_ts = time.monotonic()
+    return grouped
+
+
+def get_records_for_months(
+    months: list[tuple[int, int]], user_id: int | None = None
+) -> dict[tuple[int, int], list[dict]]:
+    """여러 달의 기록을 **시트 조회 1회**로 가져옵니다.
+
+    기존에는 연간 요약이 12개월 × '시트 전체 다운로드' = 12회 왕복이었고,
+    트렌드는 6회였습니다. 한 번 읽어 월별로 나누면 1회로 끝납니다.
+    (캐시가 전부 살아 있으면 조회 0회)
+    """
+    result: dict[tuple[int, int], list[dict]] = {}
+    missing: list[tuple[int, int]] = []
+    for key in months:
+        cached = _get_records_from_cache(*key)
+        if cached is None:
+            missing.append(key)
+        else:
+            result[key] = cached
+
+    if missing:
+        # 단일 비행(single-flight): 캐시가 비어 있을 때 대시보드/연간/트렌드가
+        # 동시에 들어오면 각자 시트 전체를 받아 같은 데이터를 중복 다운로드했다.
+        # 한 스레드만 받아오게 하고 나머지는 그 결과(캐시)를 재사용한다.
+        with _records_load_lock:
+            # 락을 기다리는 동안 다른 스레드가 이미 전체를 받아왔다면 재조회하지 않는다.
+            if not _full_load_is_fresh():
+                _load_all_months()
+            for key in missing:
+                cached = _get_records_from_cache(*key)
+                if cached is None:
+                    # 전체 로드에 없던 달 = 기록이 없는 달. 캐시에 남겨 재조회를 막는다.
+                    _set_records_cache(key[0], key[1], [])
+                    cached = []
+                result[key] = cached
+
     if user_id is not None:
-        return [r for r in cached if str(r["user_id"]) == str(user_id)]
-    return cached
+        return {
+            k: [r for r in v if str(r.get("user_id")) == str(user_id)]
+            for k, v in result.items()
+        }
+    return {k: list(v) for k, v in result.items()}
+
+
+def _date_of(row: dict) -> date | None:
+    """기록 행의 date 에서 날짜(연·월·일) 추출. 인식할 수 없으면 None."""
+    m = _DATE_FULL_RE.match(str(row.get("date", "")))
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:      # 2026-02-31 같은 존재하지 않는 날짜
+        return None
+
+
+def get_records_in_range(
+    start: date, end: date, user_id: int | None = None
+) -> list[dict]:
+    """[start, end] 기간의 기록을 반환합니다 (양끝 포함).
+
+    달 경계를 넘는 기간도 정확히 처리하며, 월 캐시를 재사용하므로
+    사용자마다 시트를 다시 내려받지 않습니다.
+    """
+    if end < start:
+        start, end = end, start
+    months: list[tuple[int, int]] = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        months.append((y, m))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+
+    grouped = get_records_for_months(months, user_id)
+    result: list[dict] = []
+    for key in months:
+        for r in grouped.get(key, []):
+            d = _date_of(r)
+            if d is not None and start <= d <= end:
+                result.append(r)
+    return result
 
 
 def get_records_for_week(
     year: int, month: int, day_start: int, day_end: int,
     user_id: int | None = None,
 ) -> list[dict]:
-    prefix = f"{year}-{month:02d}"
-    ws = get_sheet("records")
-    all_rows = _safe_get_records(ws)
-    result = []
-    for r in all_rows:
-        d = str(r["date"])
-        if not d.startswith(prefix):
-            continue
-        try:
-            if day_start <= int(d[8:10]) <= day_end:
-                result.append(r)
-        except (ValueError, IndexError):
-            continue
-    if user_id is not None:
-        result = [r for r in result if str(r["user_id"]) == str(user_id)]
-    return result
+    """한 달 안의 [day_start, day_end] 구간 기록.
+
+    달을 넘나드는 기간에는 get_records_in_range() 를 쓰세요.
+    """
+    last_day = calendar.monthrange(year, month)[1]
+    start = date(year, month, max(1, min(day_start, last_day)))
+    end   = date(year, month, max(1, min(day_end, last_day)))
+    return get_records_in_range(start, end, user_id)
 
 
 def get_all_records_for_user(user_id: int) -> list[dict]:
@@ -400,24 +576,24 @@ def search_records(user_id: int, keyword: str, limit: int = 20) -> list[dict]:
 
 # ── 집계 헬퍼 (순수 Python, I/O 없음) ──────────────────────────────
 def monthly_total(records: list[dict], record_type: str) -> float:
-    return sum(float(r["amount"]) for r in records if r["type"] == record_type)
+    return sum(to_number(r.get("amount")) for r in records if r.get("type") == record_type)
 
 
 def monthly_breakdown(records: list[dict], record_type: str) -> dict[str, float]:
     result: dict[str, float] = {}
     for r in records:
-        if r["type"] == record_type:
-            cat = r["category"]
-            result[cat] = result.get(cat, 0) + float(r["amount"])
+        if r.get("type") == record_type:
+            cat = r.get("category") or "미분류"
+            result[cat] = result.get(cat, 0) + to_number(r.get("amount"))
     return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
 
 
 def breakdown_by_user(records: list[dict], record_type: str) -> dict[str, float]:
     result: dict[str, float] = {}
     for r in records:
-        if r["type"] == record_type:
-            name = r["display_name"]
-            result[name] = result.get(name, 0) + float(r["amount"])
+        if r.get("type") == record_type:
+            name = r.get("display_name") or "이름없음"
+            result[name] = result.get(name, 0) + to_number(r.get("amount"))
     return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
 
 
@@ -451,17 +627,29 @@ def get_all_budgets_for_month(user_id: int, year: int, month: int) -> dict[str, 
     cached = _get_budgets_from_cache(user_id, year, month)
     if cached is not None:
         return cached
+    if _budgets_full_load_is_fresh(year, month):
+        # 방금 전체를 받아왔는데 이 사용자가 없었다 = 예산 미설정. 재조회 불필요.
+        _set_budgets_cache(user_id, year, month, {})
+        return {}
+
+    # 어차피 예산 시트 전체를 받아오므로, 그 김에 모든 사용자의 캐시를 채운다.
+    # (자동 리포트가 가족 구성원마다 시트를 다시 내려받던 문제를 없앤다)
     ws = get_sheet("budgets")
-    result = {}
-    for row in _safe_get_records(ws):
-        if (
-            str(row["user_id"]) == str(user_id)
-            and str(row["year"]) == str(year)
-            and str(row["month"]) == str(month)
-        ):
-            result[row["category"]] = float(row["amount"])
-    _set_budgets_cache(user_id, year, month, result)
-    return result
+    per_user: dict[str, dict[str, float]] = {}
+    for row in _safe_get_records(ws) or []:
+        if str(row.get("year")) == str(year) and str(row.get("month")) == str(month):
+            uid = str(row.get("user_id"))
+            per_user.setdefault(uid, {})[row.get("category")] = to_number(row.get("amount"))
+    for uid, budgets in per_user.items():
+        _set_budgets_cache(uid, year, month, budgets)
+    with _cache_lock:
+        _budgets_full_load[(year, month)] = time.monotonic()
+
+    result = per_user.get(str(user_id), {})
+    if str(user_id) not in per_user:
+        # 예산이 없는 사용자도 캐시에 남겨 매번 재조회하지 않도록 한다.
+        _set_budgets_cache(user_id, year, month, {})
+    return dict(result)
 
 
 def copy_budgets_from_month(
