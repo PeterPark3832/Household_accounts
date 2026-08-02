@@ -209,19 +209,24 @@ def _set_records_cache(year: int, month: int, data: list[dict]):
 
 # 마지막 '시트 전체 로드' 시각. 전체 로드 결과는 모든 달에 대한 진실이므로,
 # 이 값이 신선하면 "캐시에 없는 달 = 데이터가 없는 달" 로 단정할 수 있다.
-_records_full_load_ts: float = 0.0
+_records_full_load_ts: float | None = None
 
 
 def _full_load_is_fresh() -> bool:
     with _cache_lock:
-        return (time.monotonic() - _records_full_load_ts) < _RECORDS_TTL
+        ts = _records_full_load_ts
+    # ts=None → 아직 전체 로드한 적 없음. time.monotonic() 은 벽시계가 아니라
+    # 부팅 이후 경과 초이므로, 0.0 을 "미로드" 센티넬로 쓰면 갓 부팅한 머신
+    # (재부팅 직후 서버·CI 러너)에서 now-0.0 < TTL 이 참이 되어 "방금 로드함" 으로
+    # 오판한다 → 시트를 안 읽고 빈 결과를 반환. None 으로 명확히 구분한다.
+    return ts is not None and (time.monotonic() - ts) < _RECORDS_TTL
 
 
 def _invalidate_records_cache():
     global _records_full_load_ts
     with _cache_lock:
         _records_cache.clear()
-        _records_full_load_ts = 0.0
+        _records_full_load_ts = None
 
 
 # ── TTL 캐시 — budgets (2분, 유저×연월 키) ────────────────────────
@@ -249,8 +254,10 @@ _budgets_full_load: dict[tuple[int, int], float] = {}
 
 def _budgets_full_load_is_fresh(year: int, month: int) -> bool:
     with _cache_lock:
-        ts = _budgets_full_load.get((year, month), 0.0)
-    return (time.monotonic() - ts) < _BUDGETS_TTL
+        ts = _budgets_full_load.get((year, month))
+    # _full_load_is_fresh 와 동일한 이유: 미로드(None)를 0.0 으로 두면 갓 부팅한
+    # 머신에서 신선한 것으로 오판한다.
+    return ts is not None and (time.monotonic() - ts) < _BUDGETS_TTL
 
 
 def _invalidate_budgets_cache(user_id: int | None = None):
