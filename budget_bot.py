@@ -883,7 +883,7 @@ async def _send_summary(message, user_id: int, display_name: str, year: int, mon
         f"💸 *총 지출* {fmt(total_ex)}\n"
         f"{ex_lines_display}\n"
         f"{separator}\n"
-        f"{icon} *순수지*: {fmt(balance)}"
+        f"{icon} *잔액*: {fmt(balance)}"
     )
     await message.reply_text(text, parse_mode="Markdown", reply_markup=main_kb())
 
@@ -906,7 +906,7 @@ async def family_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{'─'*28}\n\n"
         f"💰 가족 총 수입: {fmt(total_in)}\n"
         f"💸 가족 총 지출: {fmt(total_ex)}\n"
-        f"📈 가족 순수지: {fmt(total_in - total_ex)}\n\n"
+        f"📈 가족 잔액: {fmt(total_in - total_ex)}\n\n"
         f"*구성원별 지출:*\n"
     )
     for name, amt in by_member_ex.items():
@@ -1300,7 +1300,7 @@ async def _auto_report(app: Application, year: int, month: int, label: str):
                     f"📊 *{label} 가계부 리포트* — {name}\n\n"
                     f"💰 수입: {fmt(total_in)}\n"
                     f"💸 지출: {fmt(total_ex)}\n"
-                    f"{icon} 순수지: {fmt(balance)}\n\n"
+                    f"{icon} 잔액: {fmt(balance)}\n\n"
                     f"*지출 상위 카테고리:*\n{ex_lines or '  (없음)'}\n\n"
                     "_상세 내용은 '이번달 요약' 버튼을 눌러 확인하세요_"
                 ),
@@ -1345,7 +1345,7 @@ async def scheduled_weekly(app: Application):
                     f"📅 *{label} 리포트* — {name}\n\n"
                     f"💰 수입: {fmt(total_in)}\n"
                     f"💸 지출: {fmt(total_ex)}\n"
-                    f"{icon} 순수지: {fmt(balance)}"
+                    f"{icon} 잔액: {fmt(balance)}"
                 ),
                 parse_mode="Markdown",
             )
