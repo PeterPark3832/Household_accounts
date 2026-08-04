@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import logging.handlers
+import math
 import os
 import re
 import urllib.error
@@ -181,15 +182,23 @@ def fmt(amount: float) -> str:
 
 
 def parse_amount(text: str) -> float | None:
-    """입력 텍스트에서 숫자(정수/소수)만 추출합니다."""
-    cleaned = re.sub(r"[^\d.]", "", text.strip())
-    if not cleaned:
+    """입력 텍스트에서 금액을 추출합니다. 잘못된 값은 조용히 왜곡하지 않고 거부합니다.
+
+    콤마·통화기호·'원' 만 제거하고, 그 뒤에는 순수 정수/소수 형태만 허용합니다.
+    (이전 구현은 숫자·점 외 문자를 무조건 제거해서 '-5000'→5000, '1e9'→19 처럼
+     부호·지수표기를 몰래 없애 엉뚱한 값을 기록했고, 초대형 입력은 float('inf')가
+     되어 이후 int(inf) 에서 크래시했다.)
+    """
+    cleaned = re.sub(r"[,\s₩원]", "", text.strip())
+    if not re.fullmatch(r"\d+(?:\.\d+)?", cleaned):
         return None
     try:
         value = float(cleaned)
-        return value if value > 0 else None
     except ValueError:
         return None
+    if not math.isfinite(value) or value <= 0 or value > 1e12:
+        return None
+    return value
 
 
 def match_category(keyword: str) -> tuple[str, str] | None:
@@ -204,13 +213,17 @@ def match_category(keyword: str) -> tuple[str, str] | None:
     for cat in EXPENSE_CATEGORIES:
         if cat == keyword:
             return cat, "expense"
-    # 부분 일치
-    for cat in INCOME_CATEGORIES:
-        if keyword in cat or cat in keyword:
-            return cat, "income"
-    for cat in EXPENSE_CATEGORIES:
-        if keyword in cat or cat in keyword:
-            return cat, "expense"
+    # 부분 일치 — 수입·지출 양쪽에서 후보를 모두 모은다.
+    inc = [c for c in INCOME_CATEGORIES if keyword in c or c in keyword]
+    exp = [c for c in EXPENSE_CATEGORIES if keyword in c or c in keyword]
+    # 양쪽 타입에 걸리면(예: '기타'→기타수입/기타지출, '보'→보너스/보험) 모호하므로
+    # 수입으로 단정하지 않는다. 잘못된 타입으로 기록되면 부호가 뒤집혀 합계가 깨진다.
+    if inc and exp:
+        return None
+    if inc:
+        return inc[0], "income"
+    if exp:
+        return exp[0], "expense"
     return None
 
 
@@ -932,13 +945,18 @@ async def chart_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_chart_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    # 인가 검사: 예전에 받아 둔 차트 버튼을 승인취소·대기 상태의 사용자가 눌러
+    # 가족 전체 지출 등을 조회하는 것을 막는다. (다른 핸들러와 동일한 가드)
+    if await ensure_user(update, context) is None:
+        return
+
     action = query.data.split(":", 1)[1]
 
     if action == "close":
         await query.edit_message_text("차트 메뉴를 닫았습니다.")
         return
 
-    user = context.user_data.get("chart_user") or await run_sync(sheets.find_user, update.effective_user.id)
     now  = now_kst()
     uid  = update.effective_user.id
 

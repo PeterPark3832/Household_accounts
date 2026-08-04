@@ -98,9 +98,11 @@ _AUTH_DELAY_SEC  = 0.5   # sleep on every failure (timing defense)
 _fail_log: dict[str, list[float]] = defaultdict(list)  # ip -> [timestamp, ...]
 
 def _client_ip(request: Request) -> str:
-    # Prefer X-Forwarded-For (nginx/proxy), fall back to direct connection
-    xff = request.headers.get("X-Forwarded-For", "")
-    return xff.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    # 실제 소켓 IP 만 신뢰한다. 이 서비스는 프록시 없이 uvicorn 이 직접 노출되므로
+    # X-Forwarded-For 는 클라이언트가 임의로 넣을 수 있다. 그 헤더를 레이트리밋 키로
+    # 쓰면 매 요청마다 헤더를 바꿔 무한 브루트포스가 가능해진다.
+    # (프록시 뒤에 둘 경우 uvicorn --forwarded-allow-ips 로 client.host 를 신뢰 설정.)
+    return request.client.host if request.client else "unknown"
 
 _AUTH_MAX_TRACKED_IPS = 10_000   # IP 로테이션 공격으로 인한 무한 증가 차단
 
@@ -233,10 +235,16 @@ async def api_auth(request: Request):
             headers={"Retry-After": str(_AUTH_WINDOW_SEC)},
         )
 
-    body = await request.json()
-    pw = body.get("password", "")
+    # 입력 방어: 잘못된 JSON·비-dict·비-str·비-ASCII 비밀번호가 와도 500 으로
+    # 터지지 않게 한다. secrets.compare_digest 는 비-ASCII str 이나 non-str 에
+    # TypeError 를 내므로(→ 실패 카운터도 건너뛰어 레이트리밋 우회) bytes 로 비교한다.
+    try:
+        body = await request.json()
+        pw = str(body.get("password", "")) if isinstance(body, dict) else ""
+    except Exception:
+        pw = ""
 
-    if secrets.compare_digest(pw, DASH_PASS):
+    if secrets.compare_digest(pw.encode("utf-8"), DASH_PASS.encode("utf-8")):
         logger.info("auth success from %s", ip)
         return {"token": _new_token()}
 
