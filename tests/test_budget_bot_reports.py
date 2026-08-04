@@ -227,7 +227,7 @@ class TestMonthlyReport:
         text = app.bot.sent[0]["text"]
         assert "300,000원" in text          # 수입
         assert "120,000원" in text          # 지출
-        assert "180,000원" in text          # 순수지
+        assert "180,000원" in text          # 잔액
         assert "🟥" in text                 # 예산 100% 초과 표시
 
     def test_negative_balance_uses_down_icon(self, bot_env, monkeypatch):

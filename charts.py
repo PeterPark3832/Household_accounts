@@ -179,7 +179,7 @@ def bar_chart_monthly_trend(
     ax.bar(x + w/2, expenses, w, label="지출", color="#F4845F", alpha=0.9, zorder=3)
 
     net = [i - e for i, e in zip(incomes, expenses)]
-    ax.plot(x, net, color="#F7C86F", marker="o", linewidth=1.8, label="순수지", zorder=5)
+    ax.plot(x, net, color="#F7C86F", marker="o", linewidth=1.8, label="잔액", zorder=5)
 
     ax.set_xticks(x)
     ax.set_xticklabels(months, fontsize=9, color=TEXT_CLR)
