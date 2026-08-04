@@ -182,15 +182,20 @@ def fmt(amount: float) -> str:
 
 
 def parse_amount(text: str) -> float | None:
-    """입력 텍스트에서 금액을 추출합니다. 잘못된 값은 조용히 왜곡하지 않고 거부합니다.
+    """입력 텍스트에서 금액을 추출합니다. (예: '총 3000원입니다' → 3000)
 
-    콤마·통화기호·'원' 만 제거하고, 그 뒤에는 순수 정수/소수 형태만 허용합니다.
-    (이전 구현은 숫자·점 외 문자를 무조건 제거해서 '-5000'→5000, '1e9'→19 처럼
-     부호·지수표기를 몰래 없애 엉뚱한 값을 기록했고, 초대형 입력은 float('inf')가
-     되어 이후 int(inf) 에서 크래시했다.)
+    문장에서 숫자를 뽑아내는 관대함은 유지하되, 이전 구현이 부호·지수표기를 몰래
+    없애 엉뚱한 값을 기록하던 문제는 막습니다:
+      '-500' → (이전) 500  → (지금) None   음수 거부
+      '1e9'  → (이전) 19   → (지금) None   지수표기 거부
+      '9'*400 → (이전) inf → int(inf) 크래시 → (지금) None
     """
-    cleaned = re.sub(r"[,\s₩원]", "", text.strip())
-    if not re.fullmatch(r"\d+(?:\.\d+)?", cleaned):
+    s = text.strip()
+    # 부호·지수표기는 원본에서 탐지해 거부 (아래 관대한 추출이 이를 삼키기 전에).
+    if re.search(r"-\s*\d", s) or re.search(r"\d\s*[eE]\s*\d", s):
+        return None
+    cleaned = re.sub(r"[^\d.]", "", s)
+    if not cleaned or cleaned.count(".") > 1:
         return None
     try:
         value = float(cleaned)

@@ -92,11 +92,9 @@ class TestParseAmount:
         assert parse_amount("0") is None
 
     def test_negative_string_returns_none(self):
-        # digits-only extraction strips the minus sign, yielding the magnitude
-        # which is positive → treated as valid per current implementation
-        result = parse_amount("-500")
-        # the minus sign is stripped, leaving "500" → 500.0
-        assert result == 500.0
+        # 음수는 거부한다. (이전 구현은 '-' 를 몰래 없애 500.0 으로 기록했는데,
+        # 지출이 음수로 들어오면 합계가 뒤집히므로 명백한 버그였다.)
+        assert parse_amount("-500") is None
 
     # non-numeric input
     def test_empty_string_returns_none(self):
