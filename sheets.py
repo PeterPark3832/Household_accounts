@@ -211,6 +211,12 @@ def _set_records_cache(year: int, month: int, data: list[dict]):
 # 이 값이 신선하면 "캐시에 없는 달 = 데이터가 없는 달" 로 단정할 수 있다.
 _records_full_load_ts: float | None = None
 
+# 무효화 세대 카운터. 전체 로드는 네트워크 읽기를 락 밖에서 수행하므로, 그 사이에
+# 쓰기(insert/update/delete → 무효화)가 끼어들면 로드가 '읽은 시점의 낡은 데이터' 로
+# 캐시를 덮어써 방금 쓴 값이 최대 TTL 동안 안 보인다. 로드 전 세대를 스냅샷해 두고,
+# 커밋 시점에 세대가 바뀌었으면 낡은 결과를 버리고 다시 읽는다.
+_records_gen: int = 0
+
 
 def _full_load_is_fresh() -> bool:
     with _cache_lock:
@@ -223,10 +229,11 @@ def _full_load_is_fresh() -> bool:
 
 
 def _invalidate_records_cache():
-    global _records_full_load_ts
+    global _records_full_load_ts, _records_gen
     with _cache_lock:
         _records_cache.clear()
         _records_full_load_ts = None
+        _records_gen += 1
 
 
 # ── TTL 캐시 — budgets (2분, 유저×연월 키) ────────────────────────
@@ -251,6 +258,9 @@ def _set_budgets_cache(user_id: int, year: int, month: int, data: dict[str, floa
 # 예산이 없는 것으로 단정할 수 있어 재조회가 필요 없다.
 _budgets_full_load: dict[tuple[int, int], float] = {}
 
+# records 와 동일한 이유의 무효화 세대 카운터 (쓰기-중-로드 경쟁 방지).
+_budgets_gen: int = 0
+
 
 def _budgets_full_load_is_fresh(year: int, month: int) -> bool:
     with _cache_lock:
@@ -267,7 +277,9 @@ def _invalidate_budgets_cache(user_id: int | None = None):
 
 
 def _invalidate_budgets_cache_entries(user_id: int | None = None):
+    global _budgets_gen
     with _cache_lock:
+        _budgets_gen += 1
         if user_id is None:
             _budgets_cache.clear()
         else:
@@ -452,20 +464,30 @@ def get_records_for_month(year: int, month: int, user_id: int | None = None) -> 
 
 
 def _load_all_months() -> dict[tuple[int, int], list[dict]]:
-    """시트를 한 번만 읽어 모든 월로 버킷팅하고, 각 월 캐시를 채웁니다."""
+    """시트를 한 번만 읽어 모든 월로 버킷팅하고, 각 월 캐시를 채웁니다.
+
+    네트워크 읽기 도중 쓰기(무효화)가 끼어들면 읽은 데이터가 이미 낡은 것이므로,
+    세대(_records_gen)가 바뀌었으면 캐시를 오염시키지 않고 다시 읽는다.
+    """
     global _records_full_load_ts
-    ws = get_sheet("records")
-    all_rows = _safe_get_records(ws) or []
-    grouped: dict[tuple[int, int], list[dict]] = {}
-    for row in all_rows:
-        key = _month_of(row)
-        if key is not None:
-            grouped.setdefault(key, []).append(row)
-    for key, rows in grouped.items():
-        _set_records_cache(key[0], key[1], rows)
-    with _cache_lock:
-        _records_full_load_ts = time.monotonic()
-    return grouped
+    while True:
+        with _cache_lock:
+            gen = _records_gen
+        ws = get_sheet("records")
+        all_rows = _safe_get_records(ws) or []
+        grouped: dict[tuple[int, int], list[dict]] = {}
+        for row in all_rows:
+            key = _month_of(row)
+            if key is not None:
+                grouped.setdefault(key, []).append(row)
+        with _cache_lock:
+            if gen != _records_gen:
+                continue   # 읽는 사이 쓰기가 있었다 → 낡은 결과 폐기, 재조회
+            now = time.monotonic()
+            for key, rows in grouped.items():
+                _records_cache[(key[0], key[1])] = (rows, now)
+            _records_full_load_ts = now
+            return grouped
 
 
 def get_records_for_months(
@@ -641,21 +663,28 @@ def get_all_budgets_for_month(user_id: int, year: int, month: int) -> dict[str, 
 
     # 어차피 예산 시트 전체를 받아오므로, 그 김에 모든 사용자의 캐시를 채운다.
     # (자동 리포트가 가족 구성원마다 시트를 다시 내려받던 문제를 없앤다)
+    with _cache_lock:
+        gen = _budgets_gen
     ws = get_sheet("budgets")
     per_user: dict[str, dict[str, float]] = {}
     for row in _safe_get_records(ws) or []:
         if str(row.get("year")) == str(year) and str(row.get("month")) == str(month):
             uid = str(row.get("user_id"))
             per_user.setdefault(uid, {})[row.get("category")] = to_number(row.get("amount"))
-    for uid, budgets in per_user.items():
-        _set_budgets_cache(uid, year, month, budgets)
-    with _cache_lock:
-        _budgets_full_load[(year, month)] = time.monotonic()
 
     result = per_user.get(str(user_id), {})
-    if str(user_id) not in per_user:
-        # 예산이 없는 사용자도 캐시에 남겨 매번 재조회하지 않도록 한다.
-        _set_budgets_cache(user_id, year, month, {})
+    # 읽는 사이 쓰기(set_budget→무효화)가 있었으면 낡은 결과로 캐시를 오염시키지
+    # 않는다. 이번 호출은 읽은 값을 반환하되, full_load 를 신선으로 표시하지 않아
+    # 다음 읽기가 다시 조회하게 한다.
+    with _cache_lock:
+        if gen == _budgets_gen:
+            now = time.monotonic()
+            for uid, budgets in per_user.items():
+                _budgets_cache[(uid, year, month)] = (budgets, now)
+            _budgets_full_load[(year, month)] = now
+            if str(user_id) not in per_user:
+                # 예산이 없는 사용자도 캐시에 남겨 매번 재조회하지 않도록 한다.
+                _budgets_cache[(str(user_id), year, month)] = ({}, now)
     return dict(result)
 
 
